@@ -3,7 +3,6 @@
 import threading, queue, time, csv, os, math
 from pathlib import Path
 from tkinter import Tk, StringVar, BooleanVar, DoubleVar, IntVar, ttk, filedialog, Text, END, DISABLED, NORMAL, messagebox, Toplevel, Listbox, SINGLE
-from tkinter import font as tkfont
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from pymavlink import mavutil as pymavutil
@@ -22,10 +21,6 @@ class SwarmGUI:
         self.root=root
         root.title('Swarm Mission Uploader — Pro (Map Preview)')
         root.geometry('1320x900')
-        root.minsize(1100, 780)
-        root.option_add('*tearOff', False)
-
-        self._configure_styles()
 
         # Shared state
         self.mapping = {}          # sysid -> abs mission path
@@ -58,43 +53,6 @@ class SwarmGUI:
         self._build_tab_map(self.tab_map)
         self._build_tab_generator(self.tab_gen)
 
-    def _configure_styles(self):
-        style=ttk.Style()
-        if 'clam' in style.theme_names():
-            style.theme_use('clam')
-
-        default_font=tkfont.nametofont('TkDefaultFont')
-        default_font.configure(size=10)
-        text_font=tkfont.nametofont('TkTextFont')
-        text_font.configure(size=10)
-        heading_font=tkfont.Font(root=self.root, family=default_font.cget('family'), size=10, weight='bold')
-
-        style.configure('TLabel', font=default_font)
-        style.configure('TNotebook.Tab', padding=(14,8))
-        style.configure('TLabelframe', padding=12)
-        style.configure('TLabelframe.Label', font=heading_font)
-        style.configure('Treeview', font=text_font, rowheight=int(text_font.metrics('linespace')*1.45),
-                        background='#f8fafc', fieldbackground='#f8fafc', bordercolor='#cbd5f5')
-        style.configure('Treeview.Heading', font=heading_font, padding=(8,6))
-        style.map('Treeview', background=[('selected','#bfdbfe')], foreground=[('selected','#0f172a')])
-
-        style.configure('Accent.TButton', padding=(12,6), background='#2563eb', foreground='white')
-        style.map('Accent.TButton', background=[('disabled','#93c5fd'),('pressed','#1d4ed8'),('active','#1e40af')],
-                  foreground=[('disabled','#e2e8f0'),('!disabled','white')])
-        style.configure('Success.TButton', padding=(12,6), background='#16a34a', foreground='white')
-        style.map('Success.TButton', background=[('disabled','#86efac'),('pressed','#15803d'),('active','#166534')],
-                  foreground=[('disabled','#ecfdf5'),('!disabled','white')])
-        style.configure('Danger.TButton', padding=(12,6), background='#dc2626', foreground='white')
-        style.map('Danger.TButton', background=[('disabled','#fecaca'),('pressed','#b91c1c'),('active','#ef4444')],
-                  foreground=[('disabled','#fee2e2'),('!disabled','white')])
-        style.configure('Thick.Horizontal.TProgressbar', thickness=12)
-
-        try:
-            base_mono=tkfont.nametofont('TkFixedFont')
-            self._mono_font=tkfont.Font(root=self.root, family=base_mono.cget('family'), size=10)
-        except Exception:
-            self._mono_font=tkfont.Font(root=self.root, family=default_font.cget('family'), size=10)
-
         self.root.after(100,self.flush_logs)
         self.root.after(200,self._map_process_queue)
         self.on_refresh_system_ports()
@@ -110,44 +68,26 @@ class SwarmGUI:
             pass
         self.root.after(100,self.flush_logs)
 
-    def clear_log(self):
-        if not hasattr(self,'log'):
-            return
-        self.log.configure(state=NORMAL)
-        self.log.delete('1.0', END)
-        self.log.configure(state=DISABLED)
-
     # ---------- Uploader Tab ----------
     def _build_tab_uploader(self, parent):
         top=ttk.Frame(parent,padding=8); top.pack(fill='x')
-        top.columnconfigure(1,weight=1)
         ttk.Label(top,text='Mapping CSV:').grid(row=0,column=0,sticky='w')
-        ttk.Entry(top,textvariable=self.map_file).grid(row=0,column=1,sticky='ew',padx=6)
-        ttk.Button(top,text='Load CSV…',command=self.on_load_csv).grid(row=0,column=2,sticky='w',padx=(6,0))
-        ttk.Button(top,text='Save CSV…',command=self.on_save_csv).grid(row=0,column=3,sticky='w',padx=(6,0))
+        ttk.Entry(top,textvariable=self.map_file,width=60).grid(row=0,column=1,columnspan=2,sticky='we',padx=5)
+        ttk.Button(top,text='Load CSV…',command=self.on_load_csv).grid(row=0,column=3,sticky='w',padx=5)
+        ttk.Button(top,text='Save CSV…',command=self.on_save_csv).grid(row=0,column=4,sticky='w')
 
-        ports_frame=ttk.Labelframe(parent,text='SiK Ports',padding=12)
-        ports_frame.pack(fill='both',expand=False,padx=8,pady=(0,8))
-        ports_frame.columnconfigure(0,weight=1)
-        tree_container=ttk.Frame(ports_frame)
-        tree_container.grid(row=0,column=0,sticky='nsew')
-        tree_container.columnconfigure(0,weight=1)
-        tree_container.rowconfigure(0,weight=1)
-        self.ports_tree=ttk.Treeview(tree_container,columns=('port','baud','autobaud'),show='headings',height=5,selectmode='extended')
+        ports_frame=ttk.Labelframe(parent,text='SiK Ports',padding=8)
+        ports_frame.pack(fill='x', padx=8)
+        self.ports_tree=ttk.Treeview(ports_frame,columns=('port','baud','autobaud'),show='headings',height=4,selectmode='extended')
         self.ports_tree.heading('port',text='Serial Port'); self.ports_tree.heading('baud',text='Baud'); self.ports_tree.heading('autobaud',text='Auto-baud')
-        self.ports_tree.column('port',width=320,anchor='w'); self.ports_tree.column('baud',width=100,anchor='center'); self.ports_tree.column('autobaud',width=110,anchor='center')
-        port_scroll=ttk.Scrollbar(tree_container,orient='vertical',command=self.ports_tree.yview)
-        self.ports_tree.configure(yscrollcommand=port_scroll.set)
-        self.ports_tree.grid(row=0,column=0,sticky='nsew')
-        port_scroll.grid(row=0,column=1,sticky='ns')
-        btns_port=ttk.Frame(ports_frame)
-        btns_port.grid(row=0,column=1,sticky='ns',padx=(12,0))
-        ttk.Button(btns_port,text='Add Port…',command=self.on_add_port).pack(fill='x',pady=2)
-        ttk.Button(btns_port,text='Remove Selected',command=self.on_remove_port).pack(fill='x',pady=2)
-        ttk.Button(btns_port,text='Refresh System Ports',command=self.on_refresh_system_ports).pack(fill='x',pady=2)
-        ports_frame.rowconfigure(0,weight=1)
+        self.ports_tree.column('port',width=320,anchor='w'); self.ports_tree.column('baud',width=100,anchor='center'); self.ports_tree.column('autobaud',width=100,anchor='center')
+        self.ports_tree.pack(side='left',fill='x',expand=True)
+        btns_port=ttk.Frame(ports_frame); btns_port.pack(side='right',fill='y')
+        ttk.Button(btns_port,text='Add Port…',command=self.on_add_port).pack(fill='x',padx=5,pady=2)
+        ttk.Button(btns_port,text='Remove Selected',command=self.on_remove_port).pack(fill='x',padx=5,pady=2)
+        ttk.Button(btns_port,text='Refresh System Ports',command=self.on_refresh_system_ports).pack(fill='x',padx=5,pady=2)
 
-        ctrl=ttk.Frame(parent,padding=8); ctrl.pack(fill='x',padx=8,pady=(0,8))
+        ctrl=ttk.Frame(parent,padding=8); ctrl.pack(fill='x')
         ttk.Label(ctrl,text='Discover (s)').grid(row=0,column=0,sticky='w'); ttk.Entry(ctrl,textvariable=self.discover_s,width=8).grid(row=0,column=1,sticky='w')
         ttk.Label(ctrl,text='Retries').grid(row=0,column=2,sticky='e'); ttk.Entry(ctrl,textvariable=self.retries,width=6).grid(row=0,column=3,sticky='w')
         ttk.Label(ctrl,text='Timeout (s)').grid(row=0,column=4,sticky='e'); ttk.Entry(ctrl,textvariable=self.timeout_s,width=6).grid(row=0,column=5,sticky='w')
@@ -155,54 +95,22 @@ class SwarmGUI:
         ttk.Checkbutton(ctrl,text='Arm + AUTO + Start',variable=self.arm_start).grid(row=0,column=7,sticky='w',padx=12)
         ttk.Label(ctrl,text='Stagger (s)').grid(row=0,column=8,sticky='e'); ttk.Entry(ctrl,textvariable=self.stagger_s,width=6).grid(row=0,column=9,sticky='w')
 
-        actions=ttk.Frame(parent,padding=8); actions.pack(fill='x',padx=8,pady=(0,8))
+        actions=ttk.Frame(parent,padding=(8,0)); actions.pack(fill='x')
         ttk.Button(actions,text='Discover via All Ports',command=self.on_discover).pack(side='left',padx=5)
         ttk.Button(actions,text='Assign Mission…',command=self.on_assign).pack(side='left',padx=5)
-        self.btn_upload=ttk.Button(actions,text='Upload Missions (Parallel)',command=self.on_upload,style='Accent.TButton')
-        self.btn_upload.pack(side='left',padx=5)
-        self.btn_start=ttk.Button(actions,text='Start Missions',command=self.on_start,state=DISABLED,style='Success.TButton')
-        self.btn_start.pack(side='left',padx=5)
-        self.btn_stop=ttk.Button(actions,text='Stop',command=self.on_stop,state=DISABLED,style='Danger.TButton')
-        self.btn_stop.pack(side='left',padx=5)
-        ttk.Button(actions,text='Clear Log',command=self.clear_log).pack(side='right',padx=5)
+        self.btn_upload=ttk.Button(actions,text='Upload Missions (Parallel)',command=self.on_upload); self.btn_upload.pack(side='left',padx=5)
+        self.btn_start=ttk.Button(actions,text='Start Missions',command=self.on_start,state=DISABLED); self.btn_start.pack(side='left',padx=5)
+        self.btn_stop=ttk.Button(actions,text='Stop',command=self.on_stop,state=DISABLED); self.btn_stop.pack(side='left',padx=5)
 
-        paned=ttk.Panedwindow(parent,orient='vertical')
-        paned.pack(fill='both',expand=True,padx=8,pady=(0,8))
-
-        assign_frame=ttk.Labelframe(paned,text='Vehicle Assignments',padding=12)
-        paned.add(assign_frame,weight=3)
-        table_container=ttk.Frame(assign_frame)
-        table_container.pack(fill='both',expand=True)
-        table_container.columnconfigure(0,weight=1)
-        table_container.rowconfigure(0,weight=1)
-        self.tree=ttk.Treeview(table_container,columns=('sysid','mission','status','port'),show='headings',selectmode='extended')
+        mid=ttk.Frame(parent,padding=8); mid.pack(fill='both',expand=True)
+        self.tree=ttk.Treeview(mid,columns=('sysid','mission','status','port'),show='headings',height=12,selectmode='extended')
         self.tree.heading('sysid',text='SYSID'); self.tree.heading('mission',text='Mission File'); self.tree.heading('status',text='Status'); self.tree.heading('port',text='Discovered via Port')
         self.tree.column('sysid',width=80,anchor='center'); self.tree.column('mission',width=700,anchor='w'); self.tree.column('status',width=260,anchor='w'); self.tree.column('port',width=220,anchor='w')
-        tree_vscroll=ttk.Scrollbar(table_container,orient='vertical',command=self.tree.yview)
-        tree_hscroll=ttk.Scrollbar(table_container,orient='horizontal',command=self.tree.xview)
-        self.tree.configure(yscrollcommand=tree_vscroll.set,xscrollcommand=tree_hscroll.set)
-        self.tree.grid(row=0,column=0,sticky='nsew')
-        tree_vscroll.grid(row=0,column=1,sticky='ns')
-        tree_hscroll.grid(row=1,column=0,sticky='ew')
+        self.tree.pack(fill='x',pady=5)
 
-        self.progress=ttk.Progressbar(assign_frame,mode='determinate',style='Thick.Horizontal.TProgressbar')
-        self.progress.pack(fill='x',pady=(12,0))
-
-        log_frame=ttk.Labelframe(paned,text='Activity Log',padding=12)
-        paned.add(log_frame,weight=2)
-        log_container=ttk.Frame(log_frame)
-        log_container.pack(fill='both',expand=True)
-        log_container.columnconfigure(0,weight=1)
-        log_container.rowconfigure(0,weight=1)
-        self.log=Text(log_container,height=12,wrap='word',bg='#0f172a',fg='#e2e8f0',insertbackground='#e2e8f0',relief='flat',bd=0,padx=6,pady=6)
-        if hasattr(self,'_mono_font') and self._mono_font is not None:
-            self.log.configure(font=self._mono_font)
-        log_scroll=ttk.Scrollbar(log_container,orient='vertical',command=self.log.yview)
-        self.log.configure(yscrollcommand=log_scroll.set)
-        self.log.grid(row=0,column=0,sticky='nsew')
-        log_scroll.grid(row=0,column=1,sticky='ns')
-        self.log.configure(state=DISABLED)
-
+        self.progress=ttk.Progressbar(mid,mode='determinate'); self.progress.pack(fill='x',pady=4)
+        ttk.Label(mid,text='Log:').pack(anchor='w')
+        self.log=Text(mid,height=16); self.log.pack(fill='both',expand=True)
 
     # ---------- Health Tab ----------
     def _build_tab_health(self, parent):
