@@ -117,7 +117,7 @@ class SwarmGUI:
         top=ttk.Frame(parent,padding=8); top.pack(fill='x')
         ttk.Button(top,text='Start Monitoring',command=self.health_start).pack(side='left',padx=5)
         ttk.Button(top,text='Stop Monitoring',command=self.health_stop).pack(side='left',padx=5)
-        ttk.Label(top,text='(Monitors RADIO_STATUS/RADIO from each configured port)').pack(side='left',padx=12)
+        ttk.Label(top,text='(Monitors RADIO/RADIO_STATUS from each configured port)').pack(side='left',padx=12)
 
         self.health_tree=ttk.Treeview(parent,columns=('port','rssi','remrssi','noise','rxerr','updated'),show='headings',height=14)
         for c,t,w in [('port','Port',340),('rssi','RSSI',100),('remrssi','Remote RSSI',120),('noise','Noise',100),('rxerr','RX Errors',100),('updated','Updated',160)]:
