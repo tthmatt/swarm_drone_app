@@ -21,6 +21,7 @@ from tkinter import (
 )
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from pymavlink import mavutil as pymavutil
 
 from uploader_core import (mavlink_connect, wait_heartbeat_all, read_qgc_wpl, write_qgc_wpl, mission_upload_pref_float, arm_and_start, apply_offset)
 from live_map_tab import LiveMapTab
@@ -53,6 +54,9 @@ class SwarmGUI:
         self.map_file=StringVar(value='')
 
         self.stop_flag=threading.Event(); self.log_q=queue.Queue()
+        self._map_queue=queue.Queue(); self._map_positions={}; self._map_rows={}
+        self._map_threads=[]; self._map_alive=False; self._map_dirty=False
+        self._map_last_emit={}
 
         # Notebook tabs
         nb=ttk.Notebook(root); nb.pack(fill='both',expand=True)
@@ -67,6 +71,7 @@ class SwarmGUI:
         self._build_tab_generator(self.tab_gen)
 
         self.root.after(100,self.flush_logs)
+        self.root.after(200,self._map_process_queue)
         self.on_refresh_system_ports()
 
     # ---------- Logging ----------
@@ -159,7 +164,7 @@ class SwarmGUI:
             while self._health_alive:
                 msg=m.recv_match(blocking=False)
                 if not msg: time.sleep(0.05); continue
-                if msg.get_type() in ('RADIO_STATUS','RADIO'):
+ main
                     vals=(getattr(msg,'rssi',None),getattr(msg,'remrssi',None),getattr(msg,'noise',None),getattr(msg,'rxerrors',None))
                     self._health_update_row(ep, *vals)
             break
@@ -175,21 +180,7 @@ class SwarmGUI:
                 return
         self.health_tree.insert('', 'end', values=(label, rssi, remrssi, noise, rxerr, time.strftime('%H:%M:%S')))
 
-        # ---------- Live Map Tab ----------
-    def _build_tab_map(self, parent):
-        self.live_map_tab = LiveMapTab(self, parent, mavlink_connect)
-
-    def map_start(self):
-        if hasattr(self, 'live_map_tab'):
-            self.live_map_tab.start()
-
-    def map_stop(self):
-        if hasattr(self, 'live_map_tab'):
-            self.live_map_tab.stop()
-
-    def map_clear(self):
-        if hasattr(self, 'live_map_tab'):
-            self.live_map_tab.clear()
+main
 
     # ---------- Generator Tab (with Map Preview) ----------
     def _build_tab_generator(self, parent):
