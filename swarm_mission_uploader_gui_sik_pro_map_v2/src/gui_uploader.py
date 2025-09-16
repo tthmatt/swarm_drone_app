@@ -2,29 +2,12 @@
 #!/usr/bin/env python3
 import threading, queue, time, csv, os, math
 from pathlib import Path
-from tkinter import (
-    Tk,
-    StringVar,
-    BooleanVar,
-    DoubleVar,
-    IntVar,
-    ttk,
-    filedialog,
-    Text,
-    END,
-    DISABLED,
-    NORMAL,
-    messagebox,
-    Toplevel,
-    Listbox,
-    SINGLE,
-)
+from tkinter import Tk, StringVar, BooleanVar, DoubleVar, IntVar, ttk, filedialog, Text, END, DISABLED, NORMAL, messagebox, Toplevel, Listbox, SINGLE
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from pymavlink import mavutil as pymavutil
 
 from uploader_core import (mavlink_connect, wait_heartbeat_all, read_qgc_wpl, write_qgc_wpl, mission_upload_pref_float, arm_and_start, apply_offset)
-from live_map_tab import LiveMapTab
 
 try:
     from serial.tools import list_ports
@@ -164,7 +147,7 @@ class SwarmGUI:
             while self._health_alive:
                 msg=m.recv_match(blocking=False)
                 if not msg: time.sleep(0.05); continue
- main
+                if msg.get_type() in ('RADIO_STATUS', 'RADIO'):
                     vals=(getattr(msg,'rssi',None),getattr(msg,'remrssi',None),getattr(msg,'noise',None),getattr(msg,'rxerrors',None))
                     self._health_update_row(ep, *vals)
             break
@@ -180,7 +163,232 @@ class SwarmGUI:
                 return
         self.health_tree.insert('', 'end', values=(label, rssi, remrssi, noise, rxerr, time.strftime('%H:%M:%S')))
 
-main
+    # ---------- Live Map Tab ----------
+    def _build_tab_map(self, parent):
+        top=ttk.Frame(parent,padding=8); top.pack(fill='x')
+        ttk.Button(top,text='Start Live View',command=self.map_start).pack(side='left',padx=5)
+        ttk.Button(top,text='Stop',command=self.map_stop).pack(side='left',padx=5)
+        ttk.Button(top,text='Clear',command=self.map_clear).pack(side='left',padx=5)
+        ttk.Label(top,text='(Streams HEARTBEAT/GPS from configured ports)').pack(side='left',padx=12)
+
+        status=ttk.Labelframe(parent,text='Vehicle Status',padding=8)
+        status.pack(fill='x',padx=8,pady=(0,8))
+        cols=('sysid','status','lat','lon','alt','source','updated')
+        self.map_tree=ttk.Treeview(status,columns=cols,show='headings',height=8)
+        headings=[('sysid','SYSID',70,'center'),('status','Status',220,'w'),('lat','Latitude',120,'center'),
+                  ('lon','Longitude',120,'center'),('alt','Alt (m)',90,'center'),('source','Port',200,'w'),('updated','Updated',120,'center')]
+        for key,title,width,anchor in headings:
+            self.map_tree.heading(key,text=title)
+            self.map_tree.column(key,width=width,anchor=anchor)
+        vsb=ttk.Scrollbar(status,orient='vertical',command=self.map_tree.yview)
+        self.map_tree.configure(yscrollcommand=vsb.set)
+        self.map_tree.pack(side='left',fill='both',expand=True)
+        vsb.pack(side='right',fill='y')
+
+        canvas_frame=ttk.Frame(parent,padding=(8,0,8,8))
+        canvas_frame.pack(fill='both',expand=True)
+        self.live_fig=Figure(figsize=(6,4), dpi=100)
+        self.live_ax=self.live_fig.add_subplot(111)
+        self.live_canvas=FigureCanvasTkAgg(self.live_fig, master=canvas_frame)
+        self.live_canvas_widget=self.live_canvas.get_tk_widget()
+        self.live_canvas_widget.pack(fill='both',expand=True)
+        self._map_reset_axes()
+
+    def map_start(self):
+        self.map_stop()
+        if not self.ports:
+            messagebox.showinfo('Live Map','Add at least one SiK port on the Uploader tab.'); return
+        self.map_clear()
+        self._map_alive=True; self._map_threads=[]
+        self.log_write('[map] Starting live telemetry monitor...')
+        for cfg in self.ports:
+            t=threading.Thread(target=self._map_worker,args=(cfg,),daemon=True)
+            self._map_threads.append(t); t.start()
+
+    def map_stop(self):
+        if not self._map_alive:
+            return
+        self._map_alive=False
+        self.log_write('[map] Live telemetry monitor stopping...')
+
+    def map_clear(self):
+        self._map_positions.clear(); self._map_rows.clear(); self._map_last_emit.clear()
+        if hasattr(self,'map_tree'):
+            self.map_tree.delete(*self.map_tree.get_children())
+        self._map_reset_axes(); self._map_dirty=False
+
+    def _map_reset_axes(self):
+        if not hasattr(self,'live_ax'):
+            return
+        self.live_ax.clear()
+        self.live_ax.set_xlabel('Latitude'); self.live_ax.set_ylabel('Longitude'); self.live_ax.set_title('Live Vehicle Positions')
+        self.live_ax.grid(True, linestyle='--', linewidth=0.5)
+        try:
+            self.live_ax.set_aspect('equal', adjustable='datalim')
+        except Exception:
+            pass
+        if hasattr(self,'live_canvas'):
+            self.live_canvas.draw_idle()
+
+    def _map_worker(self, cfg):
+        bauds=[cfg['baud']] if not cfg['autobaud'] else [57600,115200]
+        for b in bauds:
+            if not self._map_alive:
+                return
+            ep=f"serial:{cfg['port']},{b}"
+            self.log_write(f'[map] Listening on {ep}')
+            try:
+                m=mavlink_connect(ep)
+            except Exception as e:
+                self.log_write(f'[map] {ep} connect error: {e}')
+                continue
+            while self._map_alive:
+                msg=m.recv_match(blocking=False)
+                if not msg:
+                    time.sleep(0.1); continue
+                mtype=msg.get_type()
+                try:
+                    sysid=msg.get_srcSystem()
+                except Exception:
+                    sysid=None
+                if not sysid:
+                    continue
+                if mtype=='GLOBAL_POSITION_INT':
+                    lat=getattr(msg,'lat',None); lon=getattr(msg,'lon',None)
+                    if lat is None or lon is None:
+                        continue
+                    lat=lat/1e7; lon=lon/1e7
+                    alt=getattr(msg,'relative_alt',getattr(msg,'alt',None))
+                    if alt is not None:
+                        alt=alt/1000.0
+                    if self._should_emit(sysid,'pos',0.2):
+                        self._map_queue.put(('position', sysid, lat, lon, alt, ep, 'Global Position'))
+                elif mtype=='GPS_RAW_INT':
+                    lat=getattr(msg,'lat',None); lon=getattr(msg,'lon',None)
+                    if lat is None or lon is None:
+                        continue
+                    lat=lat/1e7; lon=lon/1e7
+                    alt=getattr(msg,'alt',None)
+                    if alt is not None:
+                        alt=alt/1000.0
+                    fix_type=getattr(msg,'fix_type',None)
+                    status=f'GPS Raw ({self._describe_fix(fix_type)})'
+                    if self._should_emit(sysid,'gps',0.5):
+                        self._map_queue.put(('position', sysid, lat, lon, alt, ep, status))
+                elif mtype=='HEARTBEAT':
+                    if self._should_emit(sysid,'hb',1.0):
+                        status=self._describe_heartbeat(msg)
+                        self._map_queue.put(('status', sysid, status, ep))
+            try:
+                m.close()
+            except Exception:
+                pass
+            return
+        self.log_write(f'[map] No telemetry received via {cfg["port"]}')
+
+    def _should_emit(self, sysid, kind, interval):
+        key=(sysid,kind)
+        now=time.time(); last=self._map_last_emit.get(key,0)
+        if now-last>=interval:
+            self._map_last_emit[key]=now
+            return True
+        return False
+
+    def _map_process_queue(self):
+        try:
+            while True:
+                item=self._map_queue.get_nowait()
+                if not item:
+                    continue
+                if item[0]=='position':
+                    _, sysid, lat, lon, alt, ep, status=item
+                    self._map_handle_position(sysid, lat, lon, alt, ep, status)
+                elif item[0]=='status':
+                    _, sysid, status, ep=item
+                    self._map_handle_status(sysid, status, ep)
+        except queue.Empty:
+            pass
+        self._map_draw_if_dirty()
+        self.root.after(400,self._map_process_queue)
+
+    def _map_handle_position(self, sysid, lat, lon, alt, ep, status):
+        data=self._map_positions.get(sysid,{})
+        data.update({'lat':lat,'lon':lon,'alt':alt,'source':self._format_source(ep),'timestamp':time.time(),'status':status})
+        self._map_positions[sysid]=data
+        self._update_map_tree(sysid,data)
+        self._map_dirty=True
+
+    def _map_handle_status(self, sysid, status, ep):
+        data=self._map_positions.get(sysid,{})
+        data.update({'status':status,'source':self._format_source(ep),'timestamp':time.time()})
+        self._map_positions[sysid]=data
+        self._update_map_tree(sysid,data)
+
+    def _update_map_tree(self, sysid, data=None):
+        if not hasattr(self,'map_tree'):
+            return
+        if data is None:
+            data=self._map_positions.get(sysid,{})
+        lat=data.get('lat'); lon=data.get('lon'); alt=data.get('alt')
+        lat_txt=f'{lat:.6f}' if lat is not None else '—'
+        lon_txt=f'{lon:.6f}' if lon is not None else '—'
+        alt_txt=f'{alt:.1f}' if alt is not None else '—'
+        status=data.get('status','')
+        src=data.get('source','')
+        ts=time.strftime('%H:%M:%S', time.localtime(data.get('timestamp',time.time())))
+        vals=(sysid, status, lat_txt, lon_txt, alt_txt, src, ts)
+        iid=self._map_rows.get(sysid)
+        if iid and self.map_tree.exists(iid):
+            self.map_tree.item(iid, values=vals)
+        else:
+            self._map_rows[sysid]=self.map_tree.insert('', 'end', values=vals)
+
+    def _map_draw_if_dirty(self):
+        if not self._map_dirty:
+            return
+        self._map_draw_points(); self._map_dirty=False
+
+    def _map_draw_points(self):
+        if not hasattr(self,'live_ax'):
+            return
+        self.live_ax.clear()
+        self.live_ax.set_xlabel('Latitude'); self.live_ax.set_ylabel('Longitude'); self.live_ax.set_title('Live Vehicle Positions')
+        self.live_ax.grid(True, linestyle='--', linewidth=0.5)
+        pts=[(data.get('lat'), data.get('lon'), sid) for sid,data in self._map_positions.items() if data.get('lat') is not None and data.get('lon') is not None]
+        if pts:
+            xs=[p[0] for p in pts]; ys=[p[1] for p in pts]
+            self.live_ax.scatter(xs, ys, c='tab:blue', s=50)
+            for lat, lon, sid in pts:
+                self.live_ax.text(lat, lon, str(sid), fontsize=9, ha='left', va='bottom')
+            try:
+                self.live_ax.set_aspect('equal', adjustable='datalim')
+            except Exception:
+                pass
+            self.live_ax.margins(0.1)
+        self.live_canvas.draw_idle()
+
+    def _format_source(self, ep):
+        if isinstance(ep,str) and ep.startswith('serial:'):
+            return ep.split('serial:')[1]
+        return ep
+
+    def _describe_fix(self, fix_type):
+        mapping={1:'No Fix',2:'2D',3:'3D',4:'DGPS',5:'RTK Float',6:'RTK Fixed'}
+        return mapping.get(fix_type,'Unknown')
+
+    def _describe_heartbeat(self, msg):
+        try:
+            mode=pymavutil.mode_string_v10(msg)
+        except Exception:
+            mode='UNKNOWN'
+        try:
+            armed=bool(msg.base_mode & pymavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+        except Exception:
+            armed=None
+        if armed is None:
+            return f'Heartbeat ({mode})'
+        state='ARMED' if armed else 'DISARMED'
+        return f'{mode} ({state})'
 
     # ---------- Generator Tab (with Map Preview) ----------
     def _build_tab_generator(self, parent):
