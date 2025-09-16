@@ -31,8 +31,6 @@ class SwarmGUI:
         root.title('Swarm Mission Uploader — Pro (Map Preview)')
         root.geometry('1320x900')
 
-        self._setup_style()
-
         # Shared state
         self.mapping = {}          # sysid -> abs mission path
         self.discovered = {}       # sysid -> compid
@@ -69,93 +67,6 @@ class SwarmGUI:
         self.root.after(200,self._map_process_queue)
         self.on_refresh_system_ports()
 
-    def _setup_style(self):
-        self.colors={
-            'background':'#f4f6fb',
-            'surface':'#ffffff',
-            'accent':'#2563eb',
-            'accent_hover':'#1d4ed8',
-            'accent_pressed':'#1e40af',
-            'accent_disabled':'#93c5fd',
-            'muted':'#475569',
-            'text':'#0f172a',
-            'danger':'#dc2626',
-            'danger_hover':'#b91c1c',
-            'danger_pressed':'#991b1b',
-            'danger_disabled':'#fecaca',
-            'success':'#16a34a',
-            'success_hover':'#15803d',
-            'success_pressed':'#166534',
-            'success_disabled':'#bbf7d0'
-        }
-
-        try:
-            self.root.option_add('*Font', 'Segoe UI 10')
-        except Exception:
-            self.root.option_add('*Font', 'Helvetica 10')
-
-        style=ttk.Style()
-        self.style=style
-        try:
-            style.theme_use('clam')
-        except Exception:
-            pass
-
-        background=self.colors['background']; surface=self.colors['surface']
-        self.root.configure(bg=background)
-
-        style.configure('.', background=background)
-        style.configure('TFrame', background=background)
-        style.configure('TLabel', background=background, foreground=self.colors['text'])
-        style.configure('Card.TFrame', background=surface)
-        style.configure('Card.TLabel', background=surface, foreground=self.colors['text'])
-        style.configure('Subheading.TLabel', background=surface, foreground=self.colors['text'], font=('Segoe UI', 10, 'bold'))
-        style.configure('Muted.TLabel', background=surface, foreground=self.colors['muted'])
-
-        style.configure('TNotebook', background=background, borderwidth=0, padding=8)
-        style.configure('TNotebook.Tab', padding=(18,10), background=background, font=('Segoe UI', 10, 'bold'))
-        style.map('TNotebook.Tab', background=[('selected', surface), ('!selected', background)],
-                   foreground=[('selected', self.colors['text']), ('!selected', self.colors['muted'])])
-
-        style.configure('TButton', padding=(12,6))
-        style.configure('Secondary.TButton', background='#e2e8f0', foreground=self.colors['text'], padding=(12,6), borderwidth=0)
-        style.map('Secondary.TButton', background=[('active', '#cbd5f5'), ('pressed', '#94a3b8')],
-                   foreground=[('disabled', '#94a3b8')])
-
-        style.configure('Accent.TButton', background=self.colors['accent'], foreground='white', padding=(14,8), borderwidth=0)
-        style.map('Accent.TButton',
-                   background=[('active', self.colors['accent_hover']), ('pressed', self.colors['accent_pressed']),
-                               ('disabled', self.colors['accent_disabled'])],
-                   foreground=[('disabled', '#e2e8f0')])
-
-        style.configure('Danger.TButton', background=self.colors['danger'], foreground='white', padding=(14,8), borderwidth=0)
-        style.map('Danger.TButton',
-                   background=[('active', self.colors['danger_hover']), ('pressed', self.colors['danger_pressed']),
-                               ('disabled', self.colors['danger_disabled'])],
-                   foreground=[('disabled', '#fee2e2')])
-
-        style.configure('Success.TButton', background=self.colors['success'], foreground='white', padding=(14,8), borderwidth=0)
-        style.map('Success.TButton',
-                   background=[('active', self.colors['success_hover']), ('pressed', self.colors['success_pressed']),
-                               ('disabled', self.colors['success_disabled'])],
-                   foreground=[('disabled', '#ecfdf3')])
-
-        style.configure('TCheckbutton', background=surface, padding=(6,4))
-        style.configure('TRadiobutton', background=surface, padding=(6,4))
-
-        style.configure('TLabelframe', background=surface)
-        style.configure('TLabelframe.Label', background=surface, foreground=self.colors['text'])
-        style.configure('Card.TLabelframe', background=surface)
-        style.configure('Card.TLabelframe.Label', background=surface, foreground=self.colors['text'], font=('Segoe UI', 10, 'bold'))
-
-        style.configure('Treeview', background=surface, fieldbackground=surface, foreground=self.colors['text'], rowheight=26)
-        style.configure('Treeview.Heading', background='#e2e8f0', foreground=self.colors['text'], font=('Segoe UI', 10, 'bold'),
-                        padding=8, relief='flat')
-        style.map('Treeview', background=[('selected', self.colors['accent'])], foreground=[('selected', 'white')])
-        style.map('Treeview.Heading', background=[('active', '#cbd5f5')])
-
-        style.configure('Accent.Horizontal.TProgressbar', troughcolor='#dbeafe', background=self.colors['accent'])
-
     # ---------- Logging ----------
     def log_write(self,msg): self.log_q.put(msg)
     def flush_logs(self):
@@ -169,91 +80,59 @@ class SwarmGUI:
 
     # ---------- Uploader Tab ----------
     def _build_tab_uploader(self, parent):
-        top=ttk.Frame(parent,padding=(18,16,18,12),style='Card.TFrame')
-        top.pack(fill='x',padx=18,pady=(18,12))
-        top.grid_columnconfigure(1,weight=1)
-        top.grid_columnconfigure(2,weight=1)
-        ttk.Label(top,text='Mapping CSV:',style='Card.TLabel').grid(row=0,column=0,sticky='w')
-        ttk.Entry(top,textvariable=self.map_file,width=60).grid(row=0,column=1,columnspan=2,sticky='we',padx=(12,12))
-        ttk.Button(top,text='Load CSV…',command=self.on_load_csv,style='Secondary.TButton').grid(row=0,column=3,sticky='e',padx=(0,8))
-        ttk.Button(top,text='Save CSV…',command=self.on_save_csv,style='Secondary.TButton').grid(row=0,column=4,sticky='e')
+        top=ttk.Frame(parent,padding=8); top.pack(fill='x')
+        ttk.Label(top,text='Mapping CSV:').grid(row=0,column=0,sticky='w')
+        ttk.Entry(top,textvariable=self.map_file,width=60).grid(row=0,column=1,columnspan=2,sticky='we',padx=5)
+        ttk.Button(top,text='Load CSV…',command=self.on_load_csv).grid(row=0,column=3,sticky='w',padx=5)
+        ttk.Button(top,text='Save CSV…',command=self.on_save_csv).grid(row=0,column=4,sticky='w')
 
-        ports_frame=ttk.Labelframe(parent,text='SiK Ports',padding=16,style='Card.TLabelframe')
-        ports_frame.pack(fill='x', padx=18, pady=(0,12))
+        ports_frame=ttk.Labelframe(parent,text='SiK Ports',padding=8)
+        ports_frame.pack(fill='x', padx=8)
         self.ports_tree=ttk.Treeview(ports_frame,columns=('port','baud','autobaud'),show='headings',height=4,selectmode='extended')
         self.ports_tree.heading('port',text='Serial Port'); self.ports_tree.heading('baud',text='Baud'); self.ports_tree.heading('autobaud',text='Auto-baud')
-        self.ports_tree.column('port',width=320,anchor='w'); self.ports_tree.column('baud',width=120,anchor='center'); self.ports_tree.column('autobaud',width=120,anchor='center')
-        self.ports_tree.pack(side='left',fill='both',expand=True,padx=(0,12),pady=4)
-        btns_port=ttk.Frame(ports_frame,style='Card.TFrame'); btns_port.pack(side='right',fill='y')
-        ttk.Button(btns_port,text='Add Port…',command=self.on_add_port,style='Secondary.TButton').pack(fill='x',padx=4,pady=4)
-        ttk.Button(btns_port,text='Remove Selected',command=self.on_remove_port,style='Secondary.TButton').pack(fill='x',padx=4,pady=4)
-        ttk.Button(btns_port,text='Refresh System Ports',command=self.on_refresh_system_ports,style='Secondary.TButton').pack(fill='x',padx=4,pady=4)
+        self.ports_tree.column('port',width=320,anchor='w'); self.ports_tree.column('baud',width=100,anchor='center'); self.ports_tree.column('autobaud',width=100,anchor='center')
+        self.ports_tree.pack(side='left',fill='x',expand=True)
+        btns_port=ttk.Frame(ports_frame); btns_port.pack(side='right',fill='y')
+        ttk.Button(btns_port,text='Add Port…',command=self.on_add_port).pack(fill='x',padx=5,pady=2)
+        ttk.Button(btns_port,text='Remove Selected',command=self.on_remove_port).pack(fill='x',padx=5,pady=2)
+        ttk.Button(btns_port,text='Refresh System Ports',command=self.on_refresh_system_ports).pack(fill='x',padx=5,pady=2)
 
-        ctrl=ttk.Frame(parent,padding=(18,12),style='Card.TFrame')
-        ctrl.pack(fill='x',padx=18,pady=(0,12))
-        ttk.Label(ctrl,text='Discover (s)',style='Card.TLabel').grid(row=0,column=0,sticky='w',padx=(0,8))
-        ttk.Entry(ctrl,textvariable=self.discover_s,width=8).grid(row=0,column=1,sticky='w',padx=(0,12))
-        ttk.Label(ctrl,text='Retries',style='Card.TLabel').grid(row=0,column=2,sticky='e')
-        ttk.Entry(ctrl,textvariable=self.retries,width=6).grid(row=0,column=3,sticky='w',padx=(6,12))
-        ttk.Label(ctrl,text='Timeout (s)',style='Card.TLabel').grid(row=0,column=4,sticky='e')
-        ttk.Entry(ctrl,textvariable=self.timeout_s,width=6).grid(row=0,column=5,sticky='w',padx=(6,12))
+        ctrl=ttk.Frame(parent,padding=8); ctrl.pack(fill='x')
+        ttk.Label(ctrl,text='Discover (s)').grid(row=0,column=0,sticky='w'); ttk.Entry(ctrl,textvariable=self.discover_s,width=8).grid(row=0,column=1,sticky='w')
+        ttk.Label(ctrl,text='Retries').grid(row=0,column=2,sticky='e'); ttk.Entry(ctrl,textvariable=self.retries,width=6).grid(row=0,column=3,sticky='w')
+        ttk.Label(ctrl,text='Timeout (s)').grid(row=0,column=4,sticky='e'); ttk.Entry(ctrl,textvariable=self.timeout_s,width=6).grid(row=0,column=5,sticky='w')
         ttk.Checkbutton(ctrl,text='Clear previous mission before upload',variable=self.clear_first).grid(row=0,column=6,sticky='w',padx=12)
         ttk.Checkbutton(ctrl,text='Arm + AUTO + Start',variable=self.arm_start).grid(row=0,column=7,sticky='w',padx=12)
-        ttk.Label(ctrl,text='Stagger (s)',style='Card.TLabel').grid(row=0,column=8,sticky='e')
-        ttk.Entry(ctrl,textvariable=self.stagger_s,width=6).grid(row=0,column=9,sticky='w',padx=(6,0))
+        ttk.Label(ctrl,text='Stagger (s)').grid(row=0,column=8,sticky='e'); ttk.Entry(ctrl,textvariable=self.stagger_s,width=6).grid(row=0,column=9,sticky='w')
 
-        actions=ttk.Frame(parent,padding=(18,12),style='Card.TFrame')
-        actions.pack(fill='x',padx=18,pady=(0,12))
-        ttk.Button(actions,text='Discover via All Ports',command=self.on_discover,style='Accent.TButton').pack(side='left',padx=6)
-        ttk.Button(actions,text='Assign Mission…',command=self.on_assign,style='Secondary.TButton').pack(side='left',padx=6)
-        self.btn_upload=ttk.Button(actions,text='Upload Missions (Parallel)',command=self.on_upload,style='Accent.TButton')
-        self.btn_upload.pack(side='left',padx=6)
-        self.btn_start=ttk.Button(actions,text='Start Missions',command=self.on_start,state=DISABLED,style='Success.TButton')
-        self.btn_start.pack(side='left',padx=6)
-        self.btn_stop=ttk.Button(actions,text='Stop',command=self.on_stop,state=DISABLED,style='Danger.TButton')
-        self.btn_stop.pack(side='left',padx=6)
+        actions=ttk.Frame(parent,padding=(8,0)); actions.pack(fill='x')
+        ttk.Button(actions,text='Discover via All Ports',command=self.on_discover).pack(side='left',padx=5)
+        ttk.Button(actions,text='Assign Mission…',command=self.on_assign).pack(side='left',padx=5)
+        self.btn_upload=ttk.Button(actions,text='Upload Missions (Parallel)',command=self.on_upload); self.btn_upload.pack(side='left',padx=5)
+        self.btn_start=ttk.Button(actions,text='Start Missions',command=self.on_start,state=DISABLED); self.btn_start.pack(side='left',padx=5)
+        self.btn_stop=ttk.Button(actions,text='Stop',command=self.on_stop,state=DISABLED); self.btn_stop.pack(side='left',padx=5)
 
-        mid=ttk.Frame(parent,padding=(18,16,18,18),style='Card.TFrame')
-        mid.pack(fill='both',expand=True,padx=18,pady=(0,18))
-        tree_container=ttk.Frame(mid,style='Card.TFrame')
-        tree_container.pack(fill='both',expand=True,pady=(0,12))
-        self.tree=ttk.Treeview(tree_container,columns=('sysid','mission','status','port'),show='headings',height=12,selectmode='extended')
+        mid=ttk.Frame(parent,padding=8); mid.pack(fill='both',expand=True)
+        self.tree=ttk.Treeview(mid,columns=('sysid','mission','status','port'),show='headings',height=12,selectmode='extended')
         self.tree.heading('sysid',text='SYSID'); self.tree.heading('mission',text='Mission File'); self.tree.heading('status',text='Status'); self.tree.heading('port',text='Discovered via Port')
-        self.tree.column('sysid',width=80,anchor='center'); self.tree.column('mission',width=640,anchor='w'); self.tree.column('status',width=260,anchor='w'); self.tree.column('port',width=220,anchor='w')
-        self.tree.pack(side='left',fill='both',expand=True)
-        tree_scroll=ttk.Scrollbar(tree_container,orient='vertical',command=self.tree.yview)
-        tree_scroll.pack(side='right',fill='y')
-        self.tree.configure(yscrollcommand=tree_scroll.set)
-        self.progress=ttk.Progressbar(mid,mode='determinate',style='Accent.Horizontal.TProgressbar')
-        self.progress.pack(fill='x',pady=(0,12))
-        ttk.Label(mid,text='Activity Log',style='Subheading.TLabel').pack(anchor='w',pady=(0,6))
-        log_container=ttk.Frame(mid,style='Card.TFrame')
-        log_container.pack(fill='both',expand=True)
-        self.log=Text(log_container,height=16,wrap='word',background='#0f172a',foreground='#e2e8f0',insertbackground='#e2e8f0',
-                      relief='flat',borderwidth=0)
-        self.log.configure(font='TkFixedFont',padx=12,pady=10,highlightthickness=1,highlightbackground='#1e293b')
-        self.log.pack(side='left',fill='both',expand=True)
-        log_scroll=ttk.Scrollbar(log_container,orient='vertical',command=self.log.yview)
-        log_scroll.pack(side='right',fill='y')
-        self.log.configure(yscrollcommand=log_scroll.set)
+        self.tree.column('sysid',width=80,anchor='center'); self.tree.column('mission',width=700,anchor='w'); self.tree.column('status',width=260,anchor='w'); self.tree.column('port',width=220,anchor='w')
+        self.tree.pack(fill='x',pady=5)
+
+        self.progress=ttk.Progressbar(mid,mode='determinate'); self.progress.pack(fill='x',pady=4)
+        ttk.Label(mid,text='Log:').pack(anchor='w')
+        self.log=Text(mid,height=16); self.log.pack(fill='both',expand=True)
 
     # ---------- Health Tab ----------
     def _build_tab_health(self, parent):
-        top=ttk.Frame(parent,padding=(18,16,18,12),style='Card.TFrame')
-        top.pack(fill='x',padx=18,pady=(18,12))
-        ttk.Button(top,text='Start Monitoring',command=self.health_start,style='Accent.TButton').pack(side='left',padx=6)
-        ttk.Button(top,text='Stop Monitoring',command=self.health_stop,style='Danger.TButton').pack(side='left',padx=6)
-        ttk.Label(top,text='(Monitors RADIO/RADIO_STATUS from each configured port)',style='Muted.TLabel').pack(side='left',padx=18)
+        top=ttk.Frame(parent,padding=8); top.pack(fill='x')
+        ttk.Button(top,text='Start Monitoring',command=self.health_start).pack(side='left',padx=5)
+        ttk.Button(top,text='Stop Monitoring',command=self.health_stop).pack(side='left',padx=5)
+        ttk.Label(top,text='(Monitors RADIO/RADIO_STATUS from each configured port)').pack(side='left',padx=12)
 
-        tree_frame=ttk.Frame(parent,padding=(18,12,18,18),style='Card.TFrame')
-        tree_frame.pack(fill='both',expand=True,padx=18,pady=(0,18))
-        self.health_tree=ttk.Treeview(tree_frame,columns=('port','rssi','remrssi','noise','rxerr','updated'),show='headings',height=14)
+        self.health_tree=ttk.Treeview(parent,columns=('port','rssi','remrssi','noise','rxerr','updated'),show='headings',height=14)
         for c,t,w in [('port','Port',340),('rssi','RSSI',100),('remrssi','Remote RSSI',120),('noise','Noise',100),('rxerr','RX Errors',100),('updated','Updated',160)]:
             self.health_tree.heading(c,text=t); self.health_tree.column(c,width=w,anchor='center' if c!='port' else 'w')
-        self.health_tree.pack(side='left',fill='both',expand=True)
-        vsb=ttk.Scrollbar(tree_frame,orient='vertical',command=self.health_tree.yview)
-        vsb.pack(side='right',fill='y')
-        self.health_tree.configure(yscrollcommand=vsb.set)
+        self.health_tree.pack(fill='both',expand=True,padx=8,pady=8)
         self._health_threads=[]; self._health_alive=False; self._health_rows={}
 
     def health_start(self):
@@ -296,15 +175,14 @@ class SwarmGUI:
 
     # ---------- Live Map Tab ----------
     def _build_tab_map(self, parent):
-        top=ttk.Frame(parent,padding=(18,16,18,12),style='Card.TFrame')
-        top.pack(fill='x',padx=18,pady=(18,12))
-        ttk.Button(top,text='Start Live View',command=self.map_start,style='Accent.TButton').pack(side='left',padx=6)
-        ttk.Button(top,text='Stop',command=self.map_stop,style='Danger.TButton').pack(side='left',padx=6)
-        ttk.Button(top,text='Clear',command=self.map_clear,style='Secondary.TButton').pack(side='left',padx=6)
-        ttk.Label(top,text='(Streams HEARTBEAT/GPS from configured ports)',style='Muted.TLabel').pack(side='left',padx=18)
+        top=ttk.Frame(parent,padding=8); top.pack(fill='x')
+        ttk.Button(top,text='Start Live View',command=self.map_start).pack(side='left',padx=5)
+        ttk.Button(top,text='Stop',command=self.map_stop).pack(side='left',padx=5)
+        ttk.Button(top,text='Clear',command=self.map_clear).pack(side='left',padx=5)
+        ttk.Label(top,text='(Streams HEARTBEAT/GPS from configured ports)').pack(side='left',padx=12)
 
-        status=ttk.Labelframe(parent,text='Vehicle Status',padding=16,style='Card.TLabelframe')
-        status.pack(fill='x',padx=18,pady=(0,12))
+        status=ttk.Labelframe(parent,text='Vehicle Status',padding=8)
+        status.pack(fill='x',padx=8,pady=(0,8))
         cols=('sysid','status','lat','lon','alt','source','updated')
         self.map_tree=ttk.Treeview(status,columns=cols,show='headings',height=8)
         headings=[('sysid','SYSID',70,'center'),('status','Status',220,'w'),('lat','Latitude',120,'center'),
@@ -317,12 +195,10 @@ class SwarmGUI:
         self.map_tree.pack(side='left',fill='both',expand=True)
         vsb.pack(side='right',fill='y')
 
-        canvas_frame=ttk.Frame(parent,padding=(18,12,18,18),style='Card.TFrame')
-        canvas_frame.pack(fill='both',expand=True,padx=18,pady=(0,18))
+        canvas_frame=ttk.Frame(parent,padding=(8,0,8,8))
+        canvas_frame.pack(fill='both',expand=True)
         self.live_fig=Figure(figsize=(6,4), dpi=100)
         self.live_ax=self.live_fig.add_subplot(111)
-        self.live_fig.patch.set_facecolor('#f8fafc')
-        self.live_ax.set_facecolor('#f1f5f9')
         self.live_canvas=FigureCanvasTkAgg(self.live_fig, master=canvas_frame)
         self.live_canvas_widget=self.live_canvas.get_tk_widget()
         self.live_canvas_widget.pack(fill='both',expand=True)
@@ -356,10 +232,8 @@ class SwarmGUI:
         if not hasattr(self,'live_ax'):
             return
         self.live_ax.clear()
-        self.live_fig.patch.set_facecolor('#f8fafc')
-        self.live_ax.set_facecolor('#f1f5f9')
         self._map_configure_axes()
-        self.live_ax.grid(True, linestyle='--', linewidth=0.5, color='#d0d7e3')
+        self.live_ax.grid(True, linestyle='--', linewidth=0.5)
         try:
             self.live_ax.set_aspect('equal', adjustable='datalim')
         except Exception:
@@ -368,12 +242,9 @@ class SwarmGUI:
             self.live_canvas.draw_idle()
 
     def _map_configure_axes(self):
-        self.live_ax.set_title('Live Vehicle Positions', color=self.colors.get('text','#0f172a'))
+        self.live_ax.set_title('Live Vehicle Positions')
         self.live_ax.set_xlabel('Longitude (°)')
         self.live_ax.set_ylabel('Latitude (°)')
-        self.live_ax.tick_params(colors=self.colors.get('muted','#475569'))
-        for spine in self.live_ax.spines.values():
-            spine.set_color('#cbd5f5')
         self.live_ax.xaxis.set_major_formatter(FuncFormatter(self._map_format_lon_tick))
         self.live_ax.yaxis.set_major_formatter(FuncFormatter(self._map_format_lat_tick))
 
@@ -510,8 +381,6 @@ class SwarmGUI:
             web_pts.append((x, y, lat, lon, sid))
 
         self.live_ax.clear()
-        self.live_fig.patch.set_facecolor('#f8fafc')
-        self.live_ax.set_facecolor('#f1f5f9')
         background=self._map_get_background(lats, lons)
         self._map_configure_axes()
 
@@ -522,7 +391,7 @@ class SwarmGUI:
             self.live_ax.set_ylim(extent[2], extent[3])
             self.live_ax.grid(False)
         else:
-            self.live_ax.grid(True, linestyle='--', linewidth=0.5, color='#d0d7e3')
+            self.live_ax.grid(True, linestyle='--', linewidth=0.5)
 
         xs=[p[0] for p in web_pts]; ys=[p[1] for p in web_pts]
 
@@ -542,10 +411,10 @@ class SwarmGUI:
             self.live_ax.set_xlim(x_min, x_max)
             self.live_ax.set_ylim(y_min, y_max)
 
-        self.live_ax.scatter(xs, ys, s=80, c=self.colors.get('accent','#2563eb'), edgecolors='#0f172a', linewidths=1.0, zorder=3)
+        self.live_ax.scatter(xs, ys, s=70, c='yellow', edgecolors='black', linewidths=0.8, zorder=3)
         for x, y, lat, lon, sid in web_pts:
             self.live_ax.text(x, y, str(sid), fontsize=9, fontweight='bold', color='white', ha='left', va='bottom', zorder=4,
-                               bbox=dict(facecolor='#0f172a', alpha=0.7, pad=0.25, edgecolor='none'))
+                               bbox=dict(facecolor='black', alpha=0.6, pad=0.2, edgecolor='none'))
         try:
             self.live_ax.set_aspect('equal', adjustable='datalim')
         except Exception:
@@ -727,45 +596,39 @@ class SwarmGUI:
 
     # ---------- Generator Tab (with Map Preview) ----------
     def _build_tab_generator(self, parent):
-        top=ttk.Frame(parent,padding=(18,16,18,12),style='Card.TFrame'); top.pack(fill='x',padx=18,pady=(18,12))
+        top=ttk.Frame(parent,padding=8); top.pack(fill='x')
         self.template_path=StringVar(value='')
-        top.grid_columnconfigure(1,weight=1)
-        ttk.Label(top,text='Template .waypoints:',style='Card.TLabel').grid(row=0,column=0,sticky='w')
-        ttk.Entry(top,textvariable=self.template_path,width=60).grid(row=0,column=1,sticky='we',padx=(12,12))
-        ttk.Button(top,text='Browse…',command=self.on_pick_template,style='Secondary.TButton').grid(row=0,column=2,sticky='e')
+        ttk.Label(top,text='Template .waypoints:').grid(row=0,column=0,sticky='w')
+        ttk.Entry(top,textvariable=self.template_path,width=60).grid(row=0,column=1,sticky='we',padx=5)
+        ttk.Button(top,text='Browse…',command=self.on_pick_template).grid(row=0,column=2,sticky='w')
 
-        mode_frame=ttk.Frame(parent,padding=(18,12),style='Card.TFrame'); mode_frame.pack(fill='x',padx=18,pady=(0,12))
+        mode_frame=ttk.Frame(parent,padding=8); mode_frame.pack(fill='x')
         self.mode=StringVar(value='Line')
-        ttk.Label(mode_frame,text='Pattern:',style='Card.TLabel').pack(side='left',padx=(0,12))
+        ttk.Label(mode_frame,text='Pattern:').pack(side='left')
         ttk.Radiobutton(mode_frame,text='Line',variable=self.mode,value='Line').pack(side='left',padx=6)
         ttk.Radiobutton(mode_frame,text='Circle',variable=self.mode,value='Circle').pack(side='left',padx=6)
 
-        params=ttk.Labelframe(parent,text='Parameters',padding=16,style='Card.TLabelframe'); params.pack(fill='x',padx=18,pady=(0,12))
+        params=ttk.Labelframe(parent,text='Parameters',padding=8); params.pack(fill='x',padx=8)
         self.dx=DoubleVar(value=10.0); self.dy=DoubleVar(value=0.0); self.alt_dz=DoubleVar(value=0.0); self.radius=DoubleVar(value=20.0)
-        ttk.Label(params,text='dx per index (m)',style='Card.TLabel').grid(row=0,column=0,sticky='e',padx=(0,8)); ttk.Entry(params,textvariable=self.dx,width=8).grid(row=0,column=1,sticky='w')
-        ttk.Label(params,text='dy per index (m)',style='Card.TLabel').grid(row=0,column=2,sticky='e',padx=(12,8)); ttk.Entry(params,textvariable=self.dy,width=8).grid(row=0,column=3,sticky='w')
-        ttk.Label(params,text='Altitude delta (m)',style='Card.TLabel').grid(row=0,column=4,sticky='e',padx=(12,8)); ttk.Entry(params,textvariable=self.alt_dz,width=8).grid(row=0,column=5,sticky='w')
-        ttk.Label(params,text='Circle radius (m)',style='Card.TLabel').grid(row=1,column=0,sticky='e',padx=(0,8),pady=(8,0)); ttk.Entry(params,textvariable=self.radius,width=8).grid(row=1,column=1,sticky='w',pady=(8,0))
+        ttk.Label(params,text='dx per index (m)').grid(row=0,column=0,sticky='e'); ttk.Entry(params,textvariable=self.dx,width=8).grid(row=0,column=1,sticky='w')
+        ttk.Label(params,text='dy per index (m)').grid(row=0,column=2,sticky='e'); ttk.Entry(params,textvariable=self.dy,width=8).grid(row=0,column=3,sticky='w')
+        ttk.Label(params,text='Altitude delta (m)').grid(row=0,column=4,sticky='e'); ttk.Entry(params,textvariable=self.alt_dz,width=8).grid(row=0,column=5,sticky='w')
+        ttk.Label(params,text='Circle radius (m)').grid(row=1,column=0,sticky='e'); ttk.Entry(params,textvariable=self.radius,width=8).grid(row=1,column=1,sticky='w')
 
-        out=ttk.Labelframe(parent,text='Output',padding=16,style='Card.TLabelframe'); out.pack(fill='x',padx=18,pady=(0,12))
+        out=ttk.Labelframe(parent,text='Output',padding=8); out.pack(fill='x',padx=8)
         self.out_dir=StringVar(value=str((Path.cwd()/ 'generated_missions').resolve()))
-        out.grid_columnconfigure(1,weight=1)
-        ttk.Label(out,text='Save to folder:',style='Card.TLabel').grid(row=0,column=0,sticky='w')
-        ttk.Entry(out,textvariable=self.out_dir,width=60).grid(row=0,column=1,sticky='we',padx=(12,12))
-        ttk.Button(out,text='Choose…',command=self.on_pick_outdir,style='Secondary.TButton').grid(row=0,column=2,sticky='e')
+        ttk.Label(out,text='Save to folder:').grid(row=0,column=0,sticky='w')
+        ttk.Entry(out,textvariable=self.out_dir,width=60).grid(row=0,column=1,sticky='we',padx=5)
+        ttk.Button(out,text='Choose…',command=self.on_pick_outdir).grid(row=0,column=2,sticky='w')
 
-        actions=ttk.Frame(parent,padding=(18,12),style='Card.TFrame'); actions.pack(fill='x',padx=18,pady=(0,12))
-        ttk.Button(actions,text='Generate for Selected SYSIDs',command=self.on_generate_for_selected,style='Accent.TButton').pack(side='left',padx=6)
-        ttk.Button(actions,text='Assign to Selected (no save)',command=self.on_assign_generated_nosave,style='Secondary.TButton').pack(side='left',padx=6)
-        ttk.Button(actions,text='Preview on Map',command=self.on_preview_map,style='Accent.TButton').pack(side='left',padx=6)
-        ttk.Button(actions,text='Clear Preview',command=self._clear_preview,style='Secondary.TButton').pack(side='left',padx=6)
+        actions=ttk.Frame(parent,padding=8); actions.pack(fill='x')
+        ttk.Button(actions,text='Generate for Selected SYSIDs',command=self.on_generate_for_selected).pack(side='left',padx=5)
+        ttk.Button(actions,text='Assign to Selected (no save)',command=self.on_assign_generated_nosave).pack(side='left',padx=5)
+        ttk.Button(actions,text='Preview on Map',command=self.on_preview_map).pack(side='left',padx=5)
+        ttk.Button(actions,text='Clear Preview',command=self._clear_preview).pack(side='left',padx=5)
 
         # Help
-        help_frame=ttk.Frame(parent,padding=(18,12),style='Card.TFrame'); help_frame.pack(fill='x',padx=18,pady=(0,12))
-        helpbox=Text(help_frame,height=6,wrap='word',background='#f8fafc',foreground=self.colors.get('text','#0f172a'),
-                     relief='flat',borderwidth=0,font=('Helvetica',10))
-        helpbox.configure(padx=12,pady=10,highlightthickness=1,highlightbackground='#d0d7e3')
-        helpbox.pack(fill='x',expand=True)
+        helpbox=Text(parent,height=6); helpbox.pack(fill='x',padx=8,pady=6)
         helpbox.insert(END, """Select SYSIDs on the Uploader tab, choose a template mission, pick Line or Circle pattern.
 Line: applies dx,dy meters * index per SYSID; optional altitude delta.
 Circle: evenly spaces SYSIDs on a circle of radius (m) around the first waypoint.
@@ -774,51 +637,34 @@ Generated files save as mission_sysidXX.waypoints; mapping updates automatically
         helpbox.configure(state=DISABLED)
 
         # Map preview
-        preview_frame=ttk.Frame(parent,padding=(18,12,18,18),style='Card.TFrame')
-        preview_frame.pack(fill='both',expand=True,padx=18,pady=(0,18))
-        self._init_map_preview(preview_frame)
+        self._init_map_preview(parent)
 
     # ----- Map preview helpers -----
     def _init_map_preview(self, parent):
         self.fig = Figure(figsize=(6,4), dpi=100)
         self.ax = self.fig.add_subplot(111)
-        self.fig.patch.set_facecolor('#f8fafc')
-        self.ax.set_facecolor('#f1f5f9')
-        self.ax.set_xlabel('Latitude')
-        self.ax.set_ylabel('Longitude')
-        self.ax.set_title('Mission Preview', color=self.colors.get('text','#0f172a'))
-        self.ax.tick_params(colors=self.colors.get('muted','#475569'))
-        for spine in self.ax.spines.values():
-            spine.set_color('#cbd5f5')
+        self.ax.set_xlabel('Latitude'); self.ax.set_ylabel('Longitude'); self.ax.set_title('Mission Preview')
         self.canvas = FigureCanvasTkAgg(self.fig, master=parent)
         self.canvas_widget = self.canvas.get_tk_widget()
-        self.canvas_widget.pack(fill='both', expand=True)
+        self.canvas_widget.pack(fill='both', expand=True, padx=8, pady=8)
 
     def _clear_preview(self):
         if hasattr(self,'ax'):
-            self.ax.clear()
-            self.fig.patch.set_facecolor('#f8fafc')
-            self.ax.set_facecolor('#f1f5f9')
-            self.ax.set_xlabel('Latitude')
-            self.ax.set_ylabel('Longitude')
-            self.ax.set_title('Mission Preview', color=self.colors.get('text','#0f172a'))
-            self.ax.tick_params(colors=self.colors.get('muted','#475569'))
-            for spine in self.ax.spines.values():
-                spine.set_color('#cbd5f5')
-            self.ax.grid(True, linestyle='--', linewidth=0.5, color='#cbd5f5')
+            self.ax.clear(); self.ax.set_xlabel('Latitude'); self.ax.set_ylabel('Longitude'); self.ax.set_title('Mission Preview')
+            self.ax.grid(True, linestyle='--', linewidth=0.5)
             self.canvas.draw_idle()
 
     def _plot_items(self, items, label=None):
         if not items: return
         xs=[it['x'] for it in items]; ys=[it['y'] for it in items]
-        self.ax.plot(xs, ys, marker='o', linewidth=1.5, color=self.colors.get('accent','#2563eb'))
+        self.ax.plot(xs, ys, marker='o', linewidth=1.5)
         if label is not None:
-            self.ax.text(xs[0], ys[0], str(label), color=self.colors.get('text','#0f172a'), fontweight='bold')
+            self.ax.text(xs[0], ys[0], str(label))
         try:
             self.ax.set_aspect('equal', adjustable='datalim')
         except Exception:
             pass
-        self.ax.grid(True, linestyle='--', linewidth=0.5, color='#cbd5f5')
+        self.ax.grid(True, linestyle='--', linewidth=0.5)
 
     def on_preview_map(self):
         base=self._load_template()
@@ -906,28 +752,16 @@ Generated files save as mission_sysidXX.waypoints; mapping updates automatically
 
     def _port_picker_dialog(self):
         dlg=Toplevel(self.root); dlg.title('Add Port'); dlg.grab_set()
-        try:
-            dlg.configure(bg=self.colors.get('background','#f4f6fb'))
-        except Exception:
-            pass
-        container=ttk.Frame(dlg,padding=(18,18,18,12),style='Card.TFrame')
-        container.pack(fill='both',expand=True)
-        ttk.Label(container,text='Select a serial port:',style='Card.TLabel').pack(anchor='w',pady=(0,8))
-        lb=Listbox(container,selectmode=SINGLE,height=8)
+        ttk.Label(dlg,text='Select a serial port:').pack(anchor='w',padx=10,pady=(10,4))
+        lb=Listbox(dlg,selectmode=SINGLE,height=8)
         choices=[p for p in getattr(self,'_system_ports',[]) if all(d['port']!=p for d in self.ports)]
         for p in choices: lb.insert(END,p)
-        lb.configure(bg='#f8fafc',highlightthickness=1,highlightbackground='#d0d7e3',relief='flat',font=('Helvetica',10))
-        lb.pack(fill='both',expand=True)
-        frm=ttk.Frame(container,style='Card.TFrame')
-        frm.pack(fill='x',pady=(12,8))
-        ttk.Label(frm,text='Baud:',style='Card.TLabel').grid(row=0,column=0,sticky='e')
-        baud_var=IntVar(value=57600)
-        baud_box=ttk.Combobox(frm,textvariable=baud_var,values=COMMON_BAUDS,state='readonly',width=10)
-        baud_box.grid(row=0,column=1,sticky='w',padx=8)
-        autobaud_var=BooleanVar(value=True)
-        ttk.Checkbutton(frm,text='Auto-baud 57600→115200',variable=autobaud_var).grid(row=0,column=2,sticky='w',padx=8)
-        btns=ttk.Frame(container,style='Card.TFrame')
-        btns.pack(fill='x',pady=(4,0))
+        lb.pack(fill='both',expand=True,padx=10)
+        frm=ttk.Frame(dlg); frm.pack(fill='x',padx=10,pady=8)
+        ttk.Label(frm,text='Baud:').grid(row=0,column=0,sticky='e'); baud_var=IntVar(value=57600)
+        baud_box=ttk.Combobox(frm,textvariable=baud_var,values=COMMON_BAUDS,state='readonly',width=10); baud_box.grid(row=0,column=1,sticky='w',padx=6)
+        autobaud_var=BooleanVar(value=True); ttk.Checkbutton(frm,text='Auto-baud 57600→115200',variable=autobaud_var).grid(row=0,column=2,sticky='w',padx=6)
+        btns=ttk.Frame(dlg); btns.pack(fill='x',padx=10,pady=(0,10))
         result={'value':None}
         def do_ok():
             sel=lb.curselection()
@@ -936,8 +770,7 @@ Generated files save as mission_sysidXX.waypoints; mapping updates automatically
             result['value']=(lb.get(sel[0]), int(baud_var.get()), bool(autobaud_var.get()))
             dlg.destroy()
         def do_cancel(): dlg.destroy()
-        ttk.Button(btns,text='Add',command=do_ok,style='Accent.TButton').pack(side='left',padx=4)
-        ttk.Button(btns,text='Cancel',command=do_cancel,style='Secondary.TButton').pack(side='right',padx=4)
+        ttk.Button(btns,text='Add',command=do_ok).pack(side='left'); ttk.Button(btns,text='Cancel',command=do_cancel).pack(side='right')
         dlg.wait_window(); return result['value']
 
     def on_add_port(self):
