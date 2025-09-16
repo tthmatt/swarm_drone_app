@@ -2,9 +2,15 @@
 #!/usr/bin/env python3
 import threading, queue, time, csv, os, math
 from pathlib import Path
+from io import BytesIO
 from tkinter import Tk, StringVar, BooleanVar, DoubleVar, IntVar, ttk, filedialog, Text, END, DISABLED, NORMAL, messagebox, Toplevel, Listbox, SINGLE
+import urllib.request, urllib.error
+import numpy as np
+from matplotlib import patheffects
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from PIL import Image
+from pymavlink import mavutil as pymavutil
 
 from uploader_core import (mavlink_connect, wait_heartbeat_all, read_qgc_wpl, write_qgc_wpl, mission_upload_pref_float, arm_and_start, apply_offset)
 
@@ -36,18 +42,27 @@ class SwarmGUI:
         self.map_file=StringVar(value='')
 
         self.stop_flag=threading.Event(); self.log_q=queue.Queue()
+        self._map_queue=queue.Queue(); self._map_positions={}; self._map_rows={}
+        self._map_threads=[]; self._map_alive=False; self._map_dirty=False
+        self._map_last_emit={}
+        self._map_last_extent=None
+        self._tile_cache={}
+        self._tile_failures=set()
 
         # Notebook tabs
         nb=ttk.Notebook(root); nb.pack(fill='both',expand=True)
         self.tab_upload=ttk.Frame(nb); nb.add(self.tab_upload,text='Uploader')
         self.tab_health=ttk.Frame(nb); nb.add(self.tab_health,text='Radio Health')
+        self.tab_map=ttk.Frame(nb); nb.add(self.tab_map,text='Live Map')
         self.tab_gen=ttk.Frame(nb); nb.add(self.tab_gen,text='Batch Mission Generator')
 
         self._build_tab_uploader(self.tab_upload)
         self._build_tab_health(self.tab_health)
+        self._build_tab_map(self.tab_map)
         self._build_tab_generator(self.tab_gen)
 
         self.root.after(100,self.flush_logs)
+        self.root.after(200,self._map_process_queue)
         self.on_refresh_system_ports()
 
     # ---------- Logging ----------
@@ -110,7 +125,7 @@ class SwarmGUI:
         top=ttk.Frame(parent,padding=8); top.pack(fill='x')
         ttk.Button(top,text='Start Monitoring',command=self.health_start).pack(side='left',padx=5)
         ttk.Button(top,text='Stop Monitoring',command=self.health_stop).pack(side='left',padx=5)
-        ttk.Label(top,text='(Monitors RADIO_STATUS from each configured port)').pack(side='left',padx=12)
+        ttk.Label(top,text='(Monitors RADIO/RADIO_STATUS from each configured port)').pack(side='left',padx=12)
 
         self.health_tree=ttk.Treeview(parent,columns=('port','rssi','remrssi','noise','rxerr','updated'),show='headings',height=14)
         for c,t,w in [('port','Port',340),('rssi','RSSI',100),('remrssi','Remote RSSI',120),('noise','Noise',100),('rxerr','RX Errors',100),('updated','Updated',160)]:
@@ -140,7 +155,7 @@ class SwarmGUI:
             while self._health_alive:
                 msg=m.recv_match(blocking=False)
                 if not msg: time.sleep(0.05); continue
-                if msg.get_type()=='RADIO_STATUS':
+                if msg.get_type() in ('RADIO_STATUS','RADIO'):
                     vals=(getattr(msg,'rssi',None),getattr(msg,'remrssi',None),getattr(msg,'noise',None),getattr(msg,'rxerrors',None))
                     self._health_update_row(ep, *vals)
             break
@@ -155,6 +170,367 @@ class SwarmGUI:
                 self.health_tree.item(iid, values=(label, rssi, remrssi, noise, rxerr, time.strftime('%H:%M:%S')))
                 return
         self.health_tree.insert('', 'end', values=(label, rssi, remrssi, noise, rxerr, time.strftime('%H:%M:%S')))
+
+    # ---------- Live Map Tab ----------
+    def _build_tab_map(self, parent):
+        top=ttk.Frame(parent,padding=8); top.pack(fill='x')
+        ttk.Button(top,text='Start Live View',command=self.map_start).pack(side='left',padx=5)
+        ttk.Button(top,text='Stop',command=self.map_stop).pack(side='left',padx=5)
+        ttk.Button(top,text='Clear',command=self.map_clear).pack(side='left',padx=5)
+        ttk.Label(top,text='(Streams HEARTBEAT/GPS from configured ports)').pack(side='left',padx=12)
+
+        status=ttk.Labelframe(parent,text='Vehicle Status',padding=8)
+        status.pack(fill='x',padx=8,pady=(0,8))
+        cols=('sysid','status','lat','lon','alt','source','updated')
+        self.map_tree=ttk.Treeview(status,columns=cols,show='headings',height=8)
+        headings=[('sysid','SYSID',70,'center'),('status','Status',220,'w'),('lat','Latitude',120,'center'),
+                  ('lon','Longitude',120,'center'),('alt','Alt (m)',90,'center'),('source','Port',200,'w'),('updated','Updated',120,'center')]
+        for key,title,width,anchor in headings:
+            self.map_tree.heading(key,text=title)
+            self.map_tree.column(key,width=width,anchor=anchor)
+        vsb=ttk.Scrollbar(status,orient='vertical',command=self.map_tree.yview)
+        self.map_tree.configure(yscrollcommand=vsb.set)
+        self.map_tree.pack(side='left',fill='both',expand=True)
+        vsb.pack(side='right',fill='y')
+
+        canvas_frame=ttk.Frame(parent,padding=(8,0,8,8))
+        canvas_frame.pack(fill='both',expand=True)
+        self.live_fig=Figure(figsize=(6,4), dpi=100)
+        self.live_ax=self.live_fig.add_subplot(111)
+        self.live_canvas=FigureCanvasTkAgg(self.live_fig, master=canvas_frame)
+        self.live_canvas_widget=self.live_canvas.get_tk_widget()
+        self.live_canvas_widget.pack(fill='both',expand=True)
+        self._map_reset_axes()
+
+    def map_start(self):
+        self.map_stop()
+        if not self.ports:
+            messagebox.showinfo('Live Map','Add at least one SiK port on the Uploader tab.'); return
+        self.map_clear()
+        self._map_alive=True; self._map_threads=[]
+        self.log_write('[map] Starting live telemetry monitor...')
+        for cfg in self.ports:
+            t=threading.Thread(target=self._map_worker,args=(cfg,),daemon=True)
+            self._map_threads.append(t); t.start()
+
+    def map_stop(self):
+        if not self._map_alive:
+            return
+        self._map_alive=False
+        self.log_write('[map] Live telemetry monitor stopping...')
+
+    def map_clear(self):
+        self._map_positions.clear(); self._map_rows.clear(); self._map_last_emit.clear(); self._map_last_extent=None
+        if hasattr(self,'map_tree'):
+            self.map_tree.delete(*self.map_tree.get_children())
+        self._map_reset_axes(); self._map_dirty=False
+
+    def _map_reset_axes(self):
+        if not hasattr(self,'live_ax'):
+            return
+        self.live_ax.clear()
+        self.live_ax.set_facecolor('#000000')
+        self.live_ax.set_xlabel('Longitude'); self.live_ax.set_ylabel('Latitude'); self.live_ax.set_title('Live Vehicle Positions')
+        self.live_ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.3, color='white')
+        try:
+            self.live_ax.set_aspect('equal', adjustable='box')
+        except Exception:
+            pass
+        if hasattr(self,'live_canvas'):
+            self.live_canvas.draw_idle()
+
+    def _map_worker(self, cfg):
+        bauds=[cfg['baud']] if not cfg['autobaud'] else [57600,115200]
+        for b in bauds:
+            if not self._map_alive:
+                return
+            ep=f"serial:{cfg['port']},{b}"
+            self.log_write(f'[map] Listening on {ep}')
+            try:
+                m=mavlink_connect(ep)
+            except Exception as e:
+                self.log_write(f'[map] {ep} connect error: {e}')
+                continue
+            while self._map_alive:
+                msg=m.recv_match(blocking=False)
+                if not msg:
+                    time.sleep(0.1); continue
+                mtype=msg.get_type()
+                try:
+                    sysid=msg.get_srcSystem()
+                except Exception:
+                    sysid=None
+                if not sysid:
+                    continue
+                if mtype=='GLOBAL_POSITION_INT':
+                    lat=getattr(msg,'lat',None); lon=getattr(msg,'lon',None)
+                    if lat is None or lon is None:
+                        continue
+                    lat=lat/1e7; lon=lon/1e7
+                    alt=getattr(msg,'relative_alt',getattr(msg,'alt',None))
+                    if alt is not None:
+                        alt=alt/1000.0
+                    if self._should_emit(sysid,'pos',0.2):
+                        self._map_queue.put(('position', sysid, lat, lon, alt, ep, 'Global Position'))
+                elif mtype=='GPS_RAW_INT':
+                    lat=getattr(msg,'lat',None); lon=getattr(msg,'lon',None)
+                    if lat is None or lon is None:
+                        continue
+                    lat=lat/1e7; lon=lon/1e7
+                    alt=getattr(msg,'alt',None)
+                    if alt is not None:
+                        alt=alt/1000.0
+                    fix_type=getattr(msg,'fix_type',None)
+                    status=f'GPS Raw ({self._describe_fix(fix_type)})'
+                    if self._should_emit(sysid,'gps',0.5):
+                        self._map_queue.put(('position', sysid, lat, lon, alt, ep, status))
+                elif mtype=='HEARTBEAT':
+                    if self._should_emit(sysid,'hb',1.0):
+                        status=self._describe_heartbeat(msg)
+                        self._map_queue.put(('status', sysid, status, ep))
+            try:
+                m.close()
+            except Exception:
+                pass
+            return
+        self.log_write(f'[map] No telemetry received via {cfg["port"]}')
+
+    def _should_emit(self, sysid, kind, interval):
+        key=(sysid,kind)
+        now=time.time(); last=self._map_last_emit.get(key,0)
+        if now-last>=interval:
+            self._map_last_emit[key]=now
+            return True
+        return False
+
+    def _map_process_queue(self):
+        try:
+            while True:
+                item=self._map_queue.get_nowait()
+                if not item:
+                    continue
+                if item[0]=='position':
+                    _, sysid, lat, lon, alt, ep, status=item
+                    self._map_handle_position(sysid, lat, lon, alt, ep, status)
+                elif item[0]=='status':
+                    _, sysid, status, ep=item
+                    self._map_handle_status(sysid, status, ep)
+        except queue.Empty:
+            pass
+        self._map_draw_if_dirty()
+        self.root.after(400,self._map_process_queue)
+
+    def _map_handle_position(self, sysid, lat, lon, alt, ep, status):
+        data=self._map_positions.get(sysid,{})
+        data.update({'lat':lat,'lon':lon,'alt':alt,'source':self._format_source(ep),'timestamp':time.time(),'status':status})
+        self._map_positions[sysid]=data
+        self._update_map_tree(sysid,data)
+        self._map_dirty=True
+
+    def _map_handle_status(self, sysid, status, ep):
+        data=self._map_positions.get(sysid,{})
+        data.update({'status':status,'source':self._format_source(ep),'timestamp':time.time()})
+        self._map_positions[sysid]=data
+        self._update_map_tree(sysid,data)
+
+    def _update_map_tree(self, sysid, data=None):
+        if not hasattr(self,'map_tree'):
+            return
+        if data is None:
+            data=self._map_positions.get(sysid,{})
+        lat=data.get('lat'); lon=data.get('lon'); alt=data.get('alt')
+        lat_txt=f'{lat:.6f}' if lat is not None else '—'
+        lon_txt=f'{lon:.6f}' if lon is not None else '—'
+        alt_txt=f'{alt:.1f}' if alt is not None else '—'
+        status=data.get('status','')
+        src=data.get('source','')
+        ts=time.strftime('%H:%M:%S', time.localtime(data.get('timestamp',time.time())))
+        vals=(sysid, status, lat_txt, lon_txt, alt_txt, src, ts)
+        iid=self._map_rows.get(sysid)
+        if iid and self.map_tree.exists(iid):
+            self.map_tree.item(iid, values=vals)
+        else:
+            self._map_rows[sysid]=self.map_tree.insert('', 'end', values=vals)
+
+    def _map_draw_if_dirty(self):
+        if not self._map_dirty:
+            return
+        self._map_draw_points(); self._map_dirty=False
+
+    def _map_draw_points(self):
+        if not hasattr(self,'live_ax'):
+            return
+        self.live_ax.clear()
+        self.live_ax.set_facecolor('#000000')
+        self.live_ax.set_xlabel('Longitude'); self.live_ax.set_ylabel('Latitude'); self.live_ax.set_title('Live Vehicle Positions')
+        self.live_ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.3, color='white')
+        pts=[(data.get('lon'), data.get('lat'), sid) for sid,data in self._map_positions.items() if data.get('lat') is not None and data.get('lon') is not None]
+        lons=[p[0] for p in pts]
+        lats=[p[1] for p in pts]
+        extent=self._map_draw_background(lats, lons)
+        if not extent:
+            # fallback axis bounds when tiles unavailable
+            if lons and lats:
+                lon_min=min(lons); lon_max=max(lons)
+                lat_min=min(lats); lat_max=max(lats)
+                pad_lon=max((lon_max-lon_min)*0.2,0.01)
+                pad_lat=max((lat_max-lat_min)*0.2,0.01)
+                self.live_ax.set_xlim(lon_min-pad_lon, lon_max+pad_lon)
+                self.live_ax.set_ylim(lat_min-pad_lat, lat_max+pad_lat)
+            else:
+                self.live_ax.set_xlim(-0.05,0.05)
+                self.live_ax.set_ylim(-0.05,0.05)
+        else:
+            self.live_ax.set_xlim(extent[0], extent[1])
+            self.live_ax.set_ylim(extent[2], extent[3])
+        if pts:
+            scatter=self.live_ax.scatter(lons, lats, c='#4dd0e1', edgecolors='black', linewidths=0.6, s=64, zorder=5)
+            scatter.set_alpha(0.95)
+            for lon, lat, sid in pts:
+                txt=self.live_ax.text(lon, lat, str(sid), fontsize=9, ha='left', va='bottom', color='white', zorder=6)
+                txt.set_path_effects([patheffects.withStroke(linewidth=2, foreground='black')])
+        else:
+            self.live_ax.text(0.5, 0.5, 'Waiting for GPS fixes…', fontsize=12, color='white', ha='center', va='center', transform=self.live_ax.transAxes)
+        try:
+            self.live_ax.set_aspect('equal', adjustable='box')
+        except Exception:
+            pass
+        self.live_canvas.draw_idle()
+
+    def _map_draw_background(self, lats=None, lons=None):
+        target_lats=lats or []
+        target_lons=lons or []
+        if target_lats and target_lons:
+            lat_min=min(target_lats); lat_max=max(target_lats)
+            lon_min=min(target_lons); lon_max=max(target_lons)
+            pad_lat=max((lat_max-lat_min)*0.3,0.01)
+            pad_lon=max((lon_max-lon_min)*0.3,0.01)
+            lat_min-=pad_lat; lat_max+=pad_lat
+            lon_min-=pad_lon; lon_max+=pad_lon
+        elif self._map_last_extent:
+            lon_min, lon_max, lat_min, lat_max=self._map_last_extent
+        else:
+            lat_min, lat_max=-1.0, 1.0
+            lon_min, lon_max=-1.0, 1.0
+        lat_min=max(lat_min,-85.0); lat_max=min(lat_max,85.0)
+        lon_min=max(lon_min,-180.0); lon_max=min(lon_max,180.0)
+        if lat_min>=lat_max:
+            lat_min-=0.01; lat_max+=0.01
+        if lon_min==lon_max:
+            lon_min-=0.01; lon_max+=0.01
+        if lon_min>lon_max:
+            lon_min, lon_max=lon_max, lon_min
+        try:
+            image, extent=self._map_fetch_satellite_tiles(lat_min, lat_max, lon_min, lon_max)
+        except Exception as e:
+            key=('tiles',str(e))
+            if key not in self._tile_failures:
+                self._tile_failures.add(key)
+                self.log_write(f'[map] Satellite background error: {e}')
+            return None
+        if image is None:
+            return None
+        self.live_ax.imshow(image, extent=extent, origin='upper', zorder=1)
+        self._map_last_extent=extent
+        return extent
+
+    def _map_fetch_satellite_tiles(self, lat_min, lat_max, lon_min, lon_max):
+        zoom=self._map_select_zoom(lat_min, lat_max, lon_min, lon_max)
+        x0, y0=self._map_tile_coords(lat_max, lon_min, zoom)
+        x1, y1=self._map_tile_coords(lat_min, lon_max, zoom)
+        x_min=int(math.floor(min(x0,x1)))
+        x_max=int(math.floor(max(x0,x1)))
+        y_min=int(math.floor(min(y0,y1)))
+        y_max=int(math.floor(max(y0,y1)))
+        width=(x_max-x_min+1)*256
+        height=(y_max-y_min+1)*256
+        mosaic=Image.new('RGB',(width,height))
+        any_tile=False
+        for xi,x in enumerate(range(x_min,x_max+1)):
+            for yi,y in enumerate(range(y_min,y_max+1)):
+                tile=self._map_get_tile(zoom,x,y)
+                if tile is None:
+                    continue
+                mosaic.paste(tile,(xi*256, yi*256))
+                any_tile=True
+        if not any_tile:
+            return None, None
+        lon_left=self._map_tile_x_to_lon(x_min, zoom)
+        lon_right=self._map_tile_x_to_lon(x_max+1, zoom)
+        lat_top=self._map_tile_y_to_lat(y_min, zoom)
+        lat_bottom=self._map_tile_y_to_lat(y_max+1, zoom)
+        extent=(lon_left, lon_right, lat_bottom, lat_top)
+        return np.asarray(mosaic), extent
+
+    def _map_select_zoom(self, lat_min, lat_max, lon_min, lon_max):
+        lon_span=max(lon_max-lon_min, 1e-6)
+        lat_span=max(lat_max-lat_min, 1e-6)
+        lon_zoom=math.log2(360.0/lon_span)
+        lat_zoom=math.log2(170.0/lat_span)
+        zoom=int(max(3, min(17, lon_zoom, lat_zoom)))
+        return zoom
+
+    def _map_tile_coords(self, lat, lon, zoom):
+        lat=max(min(lat,85.0),-85.0)
+        n=2**zoom
+        x=(lon+180.0)/360.0*n
+        lat_rad=math.radians(lat)
+        y=(1.0-math.log(math.tan(lat_rad)+1/math.cos(lat_rad))/math.pi)/2.0*n
+        return x, y
+
+    def _map_tile_x_to_lon(self, x, zoom):
+        n=2**zoom
+        return x/n*360.0-180.0
+
+    def _map_tile_y_to_lat(self, y, zoom):
+        n=2**zoom
+        lat_rad=math.atan(math.sinh(math.pi-2.0*math.pi*y/n))
+        return math.degrees(lat_rad)
+
+    def _map_get_tile(self, zoom, x, y):
+        n=2**zoom
+        x_wrapped=int(x)%n
+        if y<0 or y>=n:
+            return None
+        key=(zoom,x_wrapped,y)
+        if key in self._tile_cache:
+            return self._tile_cache[key]
+        url=f'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{zoom}/{y}/{x_wrapped}'
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                data=resp.read()
+        except Exception as e:
+            key_err=('fetch',f'{zoom}-{x_wrapped}-{y}')
+            if key_err not in self._tile_failures:
+                self._tile_failures.add(key_err)
+                self.log_write(f'[map] Tile fetch failed ({zoom}/{x_wrapped}/{y}): {e}')
+            return None
+        tile=Image.open(BytesIO(data)).convert('RGB')
+        self._tile_cache[key]=tile
+        return tile
+
+    def _format_source(self, ep):
+        if isinstance(ep,str) and ep.startswith('serial:'):
+            return ep.split('serial:')[1]
+        return ep
+
+    def _describe_fix(self, fix_type):
+        mapping={1:'No Fix',2:'2D',3:'3D',4:'DGPS',5:'RTK Float',6:'RTK Fixed'}
+        return mapping.get(fix_type,'Unknown')
+
+    def _describe_heartbeat(self, msg):
+        try:
+            mode=pymavutil.mode_string_v10(msg)
+        except Exception:
+            mode='UNKNOWN'
+        try:
+            armed=bool(msg.base_mode & pymavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+        except Exception:
+            armed=None
+        if armed is None:
+            return f'Heartbeat ({mode})'
+        state='ARMED' if armed else 'DISARMED'
+        return f'{mode} ({state})'
 
     # ---------- Generator Tab (with Map Preview) ----------
     def _build_tab_generator(self, parent):
