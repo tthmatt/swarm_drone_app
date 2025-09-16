@@ -52,6 +52,10 @@ class SwarmGUI:
         self._map_last_emit={}
         self._map_background=None; self._map_tile_cache={}; self._map_background_error=None
         self._map_projection='webmerc'; self._map_static_base=None
+        self._map_background_fetch_queue=queue.Queue(maxsize=1)
+        self._map_background_worker=None
+        self._map_background_requested_key=None
+        self._map_background_lock=threading.Lock()
 
         # Notebook tabs
         nb=ttk.Notebook(root); nb.pack(fill='both',expand=True)
@@ -222,10 +226,14 @@ class SwarmGUI:
             return
         self._map_alive=False
         self.log_write('[map] Live telemetry monitor stopping...')
+        self._map_stop_background_worker()
 
     def map_clear(self):
         self._map_positions.clear(); self._map_rows.clear(); self._map_last_emit.clear()
         self._map_background=None; self._map_background_error=None
+        with self._map_background_lock:
+            self._map_background_requested_key=None
+        self._map_clear_background_requests()
         if hasattr(self,'map_tree'):
             self.map_tree.delete(*self.map_tree.get_children())
         self._map_reset_axes(); self._map_dirty=False
@@ -335,6 +343,17 @@ class SwarmGUI:
                 elif item[0]=='status':
                     _, sysid, status, ep=item
                     self._map_handle_status(sysid, status, ep)
+                elif item[0]=='background':
+                    _, key, background=item
+                    if background:
+                        self._map_background=background
+                        self._map_background_error=None
+                    else:
+                        self._map_background=None
+                    with self._map_background_lock:
+                        if self._map_background_requested_key==key:
+                            self._map_background_requested_key=None
+                    self._map_dirty=True
         except queue.Empty:
             pass
         self._map_draw_if_dirty()
@@ -439,6 +458,110 @@ class SwarmGUI:
             pass
         self.live_canvas.draw_idle()
 
+    def _map_start_background_worker(self):
+        if getattr(self,'_map_background_fetch_queue',None) is None:
+            return
+        worker=getattr(self,'_map_background_worker',None)
+        if worker and worker.is_alive():
+            return
+        self._map_background_worker=threading.Thread(target=self._map_background_worker_loop,daemon=True)
+        self._map_background_worker.start()
+
+    def _map_stop_background_worker(self):
+        worker=getattr(self,'_map_background_worker',None)
+        if worker and not worker.is_alive():
+            self._map_background_worker=None
+            worker=None
+        if not worker:
+            with self._map_background_lock:
+                self._map_background_requested_key=None
+            self._map_clear_background_requests()
+            return
+        if worker.is_alive():
+            self._map_clear_background_requests()
+            try:
+                self._map_background_fetch_queue.put_nowait(None)
+            except queue.Full:
+                try:
+                    self._map_background_fetch_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    self._map_background_fetch_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+        with self._map_background_lock:
+            self._map_background_requested_key=None
+
+    def _map_clear_background_requests(self):
+        q=getattr(self,'_map_background_fetch_queue',None)
+        if q is None:
+            return
+        try:
+            while True:
+                q.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _map_request_background(self, region):
+        key=region['key']
+        with self._map_background_lock:
+            if self._map_background_requested_key==key:
+                return
+            self._map_background_requested_key=key
+        q=getattr(self,'_map_background_fetch_queue',None)
+        if q is None:
+            return
+        self._map_start_background_worker()
+        try:
+            q.put_nowait(region)
+        except queue.Full:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(region)
+            except queue.Full:
+                pass
+
+    def _map_prepare_background(self, region):
+        image=self._map_fetch_tile_region(region)
+        if image is not None:
+            arr=np.asarray(image)
+            return {'image':arr, 'extent':region['extent'], 'key':region['key'], 'projection':'webmerc'}
+        fallback=self._map_get_static_background(region)
+        if fallback is not None:
+            fallback['key']=region['key']
+            return fallback
+        return None
+
+    def _map_background_worker_loop(self):
+        q=getattr(self,'_map_background_fetch_queue',None)
+        if q is None:
+            self._map_background_worker=None
+            return
+        try:
+            while True:
+                region=q.get()
+                if region is None:
+                    with self._map_background_lock:
+                        self._map_background_requested_key=None
+                    break
+                key=region.get('key')
+                try:
+                    background=self._map_prepare_background(region)
+                except Exception as exc:
+                    self._map_log_once('background_worker', f'[map] Background worker error: {exc}')
+                    background=None
+                with self._map_background_lock:
+                    expected=self._map_background_requested_key
+                if expected!=key:
+                    continue
+                self._map_queue.put(('background', key, background))
+        finally:
+            self._map_background_worker=None
+
     def _map_get_background(self, lats, lons):
         region=self._map_compute_tile_region(lats, lons)
         if not region:
@@ -447,20 +570,7 @@ class SwarmGUI:
         cached=self._map_background
         if cached and cached.get('key')==key:
             return cached
-        image=self._map_fetch_tile_region(region)
-        if image is not None:
-            arr=np.asarray(image)
-            background={'image':arr, 'extent':region['extent'], 'key':key, 'projection':'webmerc'}
-            self._map_background=background
-            self._map_background_error=None
-            return background
-        fallback=self._map_get_static_background(region)
-        if fallback is not None:
-            fallback['key']=key
-            self._map_background=fallback
-            self._map_background_error=None
-            return fallback
-        self._map_background=None
+        self._map_request_background(region)
         return None
 
     def _map_compute_tile_region(self, lats, lons):
