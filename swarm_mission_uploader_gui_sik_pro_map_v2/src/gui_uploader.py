@@ -1,13 +1,23 @@
 
 #!/usr/bin/env python3
-import threading, queue, time, csv, os, math
+import threading, queue, time, csv, os, math, urllib.request
 from pathlib import Path
+from io import BytesIO
 from tkinter import Tk, StringVar, BooleanVar, DoubleVar, IntVar, ttk, filedialog, Text, END, DISABLED, NORMAL, messagebox, Toplevel, Listbox, SINGLE
+
+import numpy as np
+from matplotlib import cbook
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.ticker import FuncFormatter
+from PIL import Image
 from pymavlink import mavutil as pymavutil
 
 from uploader_core import (mavlink_connect, wait_heartbeat_all, read_qgc_wpl, write_qgc_wpl, mission_upload_pref_float, arm_and_start, apply_offset)
+
+WEB_MERCATOR_RADIUS=6378137.0
+MAX_MERCATOR_LAT=85.0511287798066
+TILE_SIZE=256
 
 try:
     from serial.tools import list_ports
@@ -40,6 +50,8 @@ class SwarmGUI:
         self._map_queue=queue.Queue(); self._map_positions={}; self._map_rows={}
         self._map_threads=[]; self._map_alive=False; self._map_dirty=False
         self._map_last_emit={}
+        self._map_background=None; self._map_tile_cache={}; self._map_background_error=None
+        self._map_projection='webmerc'; self._map_static_base=None
 
         # Notebook tabs
         nb=ttk.Notebook(root); nb.pack(fill='both',expand=True)
@@ -213,6 +225,7 @@ class SwarmGUI:
 
     def map_clear(self):
         self._map_positions.clear(); self._map_rows.clear(); self._map_last_emit.clear()
+        self._map_background=None; self._map_background_error=None
         if hasattr(self,'map_tree'):
             self.map_tree.delete(*self.map_tree.get_children())
         self._map_reset_axes(); self._map_dirty=False
@@ -221,7 +234,7 @@ class SwarmGUI:
         if not hasattr(self,'live_ax'):
             return
         self.live_ax.clear()
-        self.live_ax.set_xlabel('Latitude'); self.live_ax.set_ylabel('Longitude'); self.live_ax.set_title('Live Vehicle Positions')
+        self._map_configure_axes('webmerc')
         self.live_ax.grid(True, linestyle='--', linewidth=0.5)
         try:
             self.live_ax.set_aspect('equal', adjustable='datalim')
@@ -229,6 +242,22 @@ class SwarmGUI:
             pass
         if hasattr(self,'live_canvas'):
             self.live_canvas.draw_idle()
+
+    def _map_configure_axes(self, projection=None):
+        if projection is None:
+            projection=getattr(self,'_map_projection','webmerc')
+        else:
+            self._map_projection=projection
+        self.live_ax.set_title('Live Vehicle Positions')
+        self.live_ax.set_xlabel('Longitude (°)')
+        self.live_ax.set_ylabel('Latitude (°)')
+        if projection=='webmerc':
+            self.live_ax.xaxis.set_major_formatter(FuncFormatter(self._map_format_lon_tick))
+            self.live_ax.yaxis.set_major_formatter(FuncFormatter(self._map_format_lat_tick))
+        else:
+            fmt=FuncFormatter(self._map_format_degree_tick)
+            self.live_ax.xaxis.set_major_formatter(fmt)
+            self.live_ax.yaxis.set_major_formatter(fmt)
 
     def _map_worker(self, cfg):
         bauds=[cfg['baud']] if not cfg['autobaud'] else [57600,115200]
@@ -351,21 +380,369 @@ class SwarmGUI:
     def _map_draw_points(self):
         if not hasattr(self,'live_ax'):
             return
-        self.live_ax.clear()
-        self.live_ax.set_xlabel('Latitude'); self.live_ax.set_ylabel('Longitude'); self.live_ax.set_title('Live Vehicle Positions')
-        self.live_ax.grid(True, linestyle='--', linewidth=0.5)
         pts=[(data.get('lat'), data.get('lon'), sid) for sid,data in self._map_positions.items() if data.get('lat') is not None and data.get('lon') is not None]
-        if pts:
-            xs=[p[0] for p in pts]; ys=[p[1] for p in pts]
-            self.live_ax.scatter(xs, ys, c='tab:blue', s=50)
-            for lat, lon, sid in pts:
-                self.live_ax.text(lat, lon, str(sid), fontsize=9, ha='left', va='bottom')
-            try:
-                self.live_ax.set_aspect('equal', adjustable='datalim')
-            except Exception:
-                pass
-            self.live_ax.margins(0.1)
+        if not pts:
+            self._map_reset_axes()
+            return
+
+        lats=[p[0] for p in pts]; lons=[p[1] for p in pts]
+        point_records=[]
+        for lat, lon, sid in pts:
+            x, y=self._latlon_to_webmerc(lat, lon)
+            point_records.append({'lat':lat,'lon':lon,'sid':sid,'x':x,'y':y})
+
+        background=self._map_get_background(lats, lons)
+        self.live_ax.clear()
+        projection='webmerc'
+        if background:
+            projection=background.get('projection','webmerc')
+            self._map_configure_axes(projection)
+            img=background['image']; extent=background['extent']
+            self.live_ax.imshow(img, extent=extent, origin='upper', zorder=0)
+            self.live_ax.set_xlim(extent[0], extent[1])
+            self.live_ax.set_ylim(extent[2], extent[3])
+            self.live_ax.grid(False)
+        else:
+            self._map_configure_axes('webmerc')
+            self.live_ax.grid(True, linestyle='--', linewidth=0.5)
+
+        if background and projection=='geodetic':
+            xs=[p['lon'] for p in point_records]
+            ys=[p['lat'] for p in point_records]
+        else:
+            xs=[p['x'] for p in point_records]
+            ys=[p['y'] for p in point_records]
+
+        if not background:
+            x_min, x_max=min(xs), max(xs)
+            y_min, y_max=min(ys), max(ys)
+            x_margin=max((x_max-x_min)*0.3, 200.0)
+            y_margin=max((y_max-y_min)*0.3, 200.0)
+            if x_min==x_max:
+                x_min-=x_margin; x_max+=x_margin
+            else:
+                x_min-=x_margin; x_max+=x_margin
+            if y_min==y_max:
+                y_min-=y_margin; y_max+=y_margin
+            else:
+                y_min-=y_margin; y_max+=y_margin
+            self.live_ax.set_xlim(x_min, x_max)
+            self.live_ax.set_ylim(y_min, y_max)
+
+        self.live_ax.scatter(xs, ys, s=70, c='yellow', edgecolors='black', linewidths=0.8, zorder=3)
+        for record, x, y in zip(point_records, xs, ys):
+            self.live_ax.text(x, y, str(record['sid']), fontsize=9, fontweight='bold', color='white', ha='left', va='bottom', zorder=4,
+                               bbox=dict(facecolor='black', alpha=0.6, pad=0.2, edgecolor='none'))
+        try:
+            self.live_ax.set_aspect('equal', adjustable='datalim')
+        except Exception:
+            pass
         self.live_canvas.draw_idle()
+
+    def _map_get_background(self, lats, lons):
+        region=self._map_compute_tile_region(lats, lons)
+        if not region:
+            return None
+        key=region['key']
+        cached=self._map_background
+        if cached and cached.get('key')==key:
+            return cached
+        image=self._map_fetch_tile_region(region)
+        if image is not None:
+            arr=np.asarray(image)
+            background={'image':arr, 'extent':region['extent'], 'key':key, 'projection':'webmerc'}
+            self._map_background=background
+            self._map_background_error=None
+            return background
+        fallback=self._map_get_static_background(region)
+        if fallback is not None:
+            fallback['key']=key
+            self._map_background=fallback
+            self._map_background_error=None
+            return fallback
+        self._map_background=None
+        return None
+
+    def _map_compute_tile_region(self, lats, lons):
+        if not lats or not lons:
+            return None
+        lat_min=min(lats); lat_max=max(lats)
+        lon_min=min(lons); lon_max=max(lons)
+        lat_span=lat_max-lat_min; lon_span=lon_max-lon_min
+        lat_margin=max(lat_span*0.3, 0.002)
+        lon_margin=max(lon_span*0.3, 0.002)
+        lat_min_adj=self._clamp_lat(lat_min-lat_margin)
+        lat_max_adj=self._clamp_lat(lat_max+lat_margin)
+        if lon_max-lon_min>=350:
+            lon_min_adj=-180.0; lon_max_adj=180.0
+        else:
+            lon_min_adj=max(-180.0, lon_min-lon_margin)
+            lon_max_adj=min(180.0, lon_max+lon_margin)
+
+        for zoom in range(17, 1, -1):
+            region=self._map_tile_bounds(lon_min_adj, lon_max_adj, lat_min_adj, lat_max_adj, zoom)
+            if region['width_tiles']<=4 and region['height_tiles']<=4:
+                region.update({'lat_min':lat_min_adj,'lat_max':lat_max_adj,'lon_min':lon_min_adj,'lon_max':lon_max_adj})
+                return region
+        region=self._map_tile_bounds(lon_min_adj, lon_max_adj, lat_min_adj, lat_max_adj, 2)
+        region.update({'lat_min':lat_min_adj,'lat_max':lat_max_adj,'lon_min':lon_min_adj,'lon_max':lon_max_adj})
+        return region
+
+    def _map_tile_bounds(self, lon_min, lon_max, lat_min, lat_max, zoom):
+        n=2**zoom
+        x_min=max(int(math.floor(self._lon_to_xtile(lon_min, zoom))), 0)
+        x_max=min(int(math.floor(self._lon_to_xtile(lon_max, zoom))), n-1)
+        if x_max<x_min:
+            x_max=x_min
+        y_top=max(int(math.floor(self._lat_to_ytile(lat_max, zoom))), 0)
+        y_bottom=min(int(math.floor(self._lat_to_ytile(lat_min, zoom))), n-1)
+        if y_bottom<y_top:
+            y_bottom=y_top
+
+        lon_left=self._xtile_to_lon(x_min, zoom)
+        lon_right=self._xtile_to_lon(x_max+1 if x_max+1<=n else n, zoom)
+        lat_top=self._ytile_to_lat(y_top, zoom)
+        lat_bottom=self._ytile_to_lat(y_bottom+1 if y_bottom+1<=n else n, zoom)
+        x0=self._lon_to_webmerc(lon_left); x1=self._lon_to_webmerc(lon_right)
+        y1=self._lat_to_webmerc(lat_top); y0=self._lat_to_webmerc(lat_bottom)
+        return {
+            'zoom':zoom,
+            'x_min':x_min,
+            'x_max':x_max,
+            'y_top':y_top,
+            'y_bottom':y_bottom,
+            'width_tiles':x_max-x_min+1,
+            'height_tiles':y_bottom-y_top+1,
+            'extent':(x0, x1, y0, y1),
+            'key':(zoom, x_min, x_max, y_top, y_bottom),
+            'lon_left':lon_left,
+            'lon_right':lon_right,
+            'lat_top':lat_top,
+            'lat_bottom':lat_bottom,
+            'extent_latlon':(lon_left, lon_right, lat_bottom, lat_top)
+        }
+
+    def _map_fetch_tile_region(self, region):
+        zoom=region['zoom']
+        x_min=region['x_min']; x_max=region['x_max']
+        y_top=region['y_top']; y_bottom=region['y_bottom']
+        width=(x_max-x_min+1)*TILE_SIZE
+        height=(y_bottom-y_top+1)*TILE_SIZE
+        composite=Image.new('RGB',(width,height))
+        for xi, x in enumerate(range(x_min, x_max+1)):
+            for yi, y in enumerate(range(y_top, y_bottom+1)):
+                tile=self._map_fetch_tile(zoom, x, y)
+                if tile is None:
+                    return None
+                composite.paste(tile,(xi*TILE_SIZE, yi*TILE_SIZE))
+        return composite
+
+    def _map_fetch_tile(self, zoom, x, y):
+        key=(zoom,x,y)
+        if key in self._map_tile_cache:
+            return self._map_tile_cache[key]
+        url=f"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{zoom}/{y}/{x}"
+        try:
+            req=urllib.request.Request(url, headers={'User-Agent':'SwarmMissionUploader/1.0'})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data=resp.read()
+            image=Image.open(BytesIO(data)).convert('RGB')
+            image.load()
+            if len(self._map_tile_cache)>=256:
+                self._map_tile_cache.clear()
+            self._map_tile_cache[key]=image
+            return image
+        except Exception as exc:
+            self._map_log_once('tile_fetch', f'[map] Satellite tile download failed (falling back to bundled imagery): {exc}')
+            return None
+
+    def _map_get_static_background(self, region):
+        base=self._map_load_static_base()
+        if base is None:
+            return None
+        try:
+            lon_left=region.get('lon_left', region.get('lon_min', -180.0))
+            lon_right=region.get('lon_right', region.get('lon_max', 180.0))
+            lat_top=region.get('lat_top', region.get('lat_max', 85.0))
+            lat_bottom=region.get('lat_bottom', region.get('lat_min', -85.0))
+            lon_left=max(-180.0, min(180.0, lon_left))
+            lon_right=max(-180.0, min(180.0, lon_right))
+            lat_top=max(-90.0, min(90.0, lat_top))
+            lat_bottom=max(-90.0, min(90.0, lat_bottom))
+            width, height=base.size
+
+            def lon_to_x(value):
+                frac=(value+180.0)/360.0
+                return int(max(0, min(width, frac*width)))
+
+            def lat_to_y(value):
+                frac=(90.0-value)/180.0
+                return int(max(0, min(height, frac*height)))
+
+            x0=lon_to_x(lon_left); x1=lon_to_x(lon_right)
+            y0=lat_to_y(lat_top); y1=lat_to_y(lat_bottom)
+            if x1<=x0:
+                x1=min(width, x0+2)
+                x0=max(0, x1-2)
+            if y1<=y0:
+                y1=min(height, y0+2)
+                y0=max(0, y1-2)
+            crop=base.crop((x0, y0, x1, y1))
+            target_w=max(128, crop.width)
+            target_h=max(128, crop.height)
+            if crop.width<target_w or crop.height<target_h:
+                crop=crop.resize((target_w, target_h), Image.BICUBIC)
+            arr=np.asarray(crop)
+            extent=(lon_left, lon_right, lat_bottom, lat_top)
+            self._map_log_once('fallback_notice', '[map] Using bundled fallback imagery for live map background.')
+            return {'image':arr, 'extent':extent, 'projection':'geodetic', 'source':'fallback'}
+        except Exception as exc:
+            self._map_log_once('static_background', f'[map] Failed to prepare fallback imagery: {exc}')
+            return None
+
+    def _map_load_static_base(self):
+        base=getattr(self,'_map_static_base', None)
+        if base is False:
+            return None
+        if base is None:
+            candidates=('earth_lights.png','blue_marble.png','bluemarble.jpg','world.png')
+            for name in candidates:
+                try:
+                    path=cbook.get_sample_data(name, asfileobj=False)
+                except Exception:
+                    path=None
+                if not path:
+                    continue
+                try:
+                    img=Image.open(path).convert('RGB')
+                    self._map_static_base=img
+                    return img
+                except Exception:
+                    continue
+            generated=self._generate_static_base_image()
+            if generated is not None:
+                self._map_static_base=generated
+                return generated
+            self._map_static_base=False
+            return None
+        return base
+
+    def _generate_static_base_image(self):
+        try:
+            width=2048; height=1024
+            lon_vals=np.linspace(-180.0, 180.0, width, endpoint=False)
+            lat_vals=np.linspace(90.0, -90.0, height)
+            lon_grid, lat_grid=np.meshgrid(lon_vals, lat_vals)
+            land_score=np.zeros_like(lat_grid, dtype=float)
+            features=[
+                (55, -120, 1.6, 26, 35),
+                (18, -98, 1.3, 20, 24),
+                (-10, -60, 1.4, 22, 18),
+                (20, 15, 1.6, 22, 18),
+                (48, 20, 1.3, 14, 28),
+                (30, 95, 1.8, 24, 34),
+                (8, 135, 0.9, 18, 20),
+                (-25, 135, 0.8, 20, 22),
+                (-20, 30, 1.2, 18, 18),
+                (-35, -60, 1.0, 18, 14),
+                (70, -40, 1.1, 12, 20),
+            ]
+            for lat0, lon0, weight, sigma_lat, sigma_lon in features:
+                dlat=(lat_grid-lat0)/sigma_lat
+                dlon=((lon_grid-lon0+180.0)%360.0-180.0)/sigma_lon
+                land_score+=weight*np.exp(-0.5*(dlat**2 + dlon**2))
+            land_score+=0.18*np.cos(np.radians(lat_grid*1.3))*np.cos(np.radians((lon_grid-20.0)/1.5))
+            land_score+=0.12*np.cos(np.radians(lat_grid+lon_grid))
+            land_score+=0.08*np.cos(np.radians((lon_grid-120.0)*2))*np.exp(-((lat_grid+35.0)**2)/(2*18**2))
+            land_mask=land_score>0.32
+
+            colors=np.zeros((height,width,3), dtype=np.uint8)
+            water_depth=0.55+0.45*np.cos(np.radians(lat_grid))
+            colors[...,0]=(25+45*water_depth).astype(np.uint8)
+            colors[...,1]=(70+90*water_depth).astype(np.uint8)
+            colors[...,2]=(120+115*water_depth).astype(np.uint8)
+
+            dryness=np.clip((np.abs(lat_grid)-15.0)/45.0, 0.0, 1.0)
+            fertility=np.clip((land_score-0.2)/1.5, 0.0, 1.0)
+            elevation=np.clip(land_score-0.48, 0.0, 1.0)
+            red=70+75*dryness+25*(1-fertility)
+            green=85+110*(1-dryness)+70*fertility
+            blue=45+60*(1-dryness)
+            snow=np.clip((np.abs(lat_grid)-55.0)/20.0, 0.0, 1.0)
+            red=red*(1-snow)+255*snow
+            green=green*(1-snow)+255*snow
+            blue=blue*(1-snow)+255*snow
+            mist=np.clip(elevation*0.6, 0.0, 0.6)
+            red=red*(1-mist)+255*mist*0.6
+            green=green*(1-mist)+255*mist*0.7
+            blue=blue*(1-mist)+255*mist
+
+            colors[...,0][land_mask]=np.clip(red[land_mask],0,255).astype(np.uint8)
+            colors[...,1][land_mask]=np.clip(green[land_mask],0,255).astype(np.uint8)
+            colors[...,2][land_mask]=np.clip(blue[land_mask],0,255).astype(np.uint8)
+
+            haze=np.clip(0.08*np.cos(np.radians(lon_grid*3.0))+0.05*np.sin(np.radians(lat_grid*5.0)), -0.12, 0.12)
+            for idx in range(3):
+                channel=colors[...,idx].astype(np.float32)
+                channel*=1.0+haze
+                colors[...,idx]=np.clip(channel,0,255).astype(np.uint8)
+
+            return Image.fromarray(colors, 'RGB')
+        except Exception as exc:
+            self._map_log_once('static_background', f'[map] Failed to generate fallback imagery: {exc}')
+            return None
+
+    def _map_log_once(self, key, message):
+        if self._map_background_error!=key:
+            self.log_write(message)
+            self._map_background_error=key
+
+    def _latlon_to_webmerc(self, lat, lon):
+        lat=self._clamp_lat(lat)
+        x=self._lon_to_webmerc(lon)
+        y=self._lat_to_webmerc(lat)
+        return x, y
+
+    def _lon_to_webmerc(self, lon):
+        return math.radians(lon) * WEB_MERCATOR_RADIUS
+
+    def _lat_to_webmerc(self, lat):
+        lat=self._clamp_lat(lat)
+        lat_rad=math.radians(lat)
+        return WEB_MERCATOR_RADIUS * math.log(math.tan(math.pi/4 + lat_rad/2))
+
+    def _map_format_lon_tick(self, value, _):
+        return f'{self._webmerc_to_lon(value):.4f}'
+
+    def _map_format_lat_tick(self, value, _):
+        return f'{self._webmerc_to_lat(value):.4f}'
+
+    def _map_format_degree_tick(self, value, _):
+        return f'{value:.4f}'
+
+    def _webmerc_to_lon(self, x):
+        return math.degrees(x / WEB_MERCATOR_RADIUS)
+
+    def _webmerc_to_lat(self, y):
+        return math.degrees(2 * math.atan(math.exp(y / WEB_MERCATOR_RADIUS)) - math.pi/2)
+
+    def _lon_to_xtile(self, lon, zoom):
+        return (lon + 180.0) / 360.0 * (2 ** zoom)
+
+    def _lat_to_ytile(self, lat, zoom):
+        lat=self._clamp_lat(lat)
+        lat_rad=math.radians(lat)
+        return (1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * (2 ** zoom)
+
+    def _xtile_to_lon(self, x, zoom):
+        return x / (2 ** zoom) * 360.0 - 180.0
+
+    def _ytile_to_lat(self, y, zoom):
+        n=math.pi - 2.0 * math.pi * y / (2 ** zoom)
+        return math.degrees(math.atan(math.sinh(n)))
+
+    def _clamp_lat(self, lat):
+        return max(-MAX_MERCATOR_LAT, min(MAX_MERCATOR_LAT, lat))
 
     def _format_source(self, ep):
         if isinstance(ep,str) and ep.startswith('serial:'):
